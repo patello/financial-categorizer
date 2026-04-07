@@ -1,0 +1,136 @@
+"""CSV importer for financial-categorizer.
+
+Auto-detects bank CSV format (Nordea, ICA) and imports transactions
+into the SQLite database with deduplication.
+"""
+
+import csv
+import datetime
+import os
+
+
+# Known CSV formats. Detection uses a unique header combo per format.
+CSV_FORMATS = {
+    "nordea": {
+        "detect_headers": ["Bokföringsdag", "Rubrik"],
+        "date_col": "Bokföringsdag",
+        "amount_col": "Belopp",
+        "desc_col": "Rubrik",
+    },
+    "ica": {
+        "detect_headers": ["Datum", "Text", "Typ"],
+        "date_col": "Datum",
+        "amount_col": "Belopp",
+        "desc_col": "Text",
+    },
+}
+
+
+def parse_date(date_string: str) -> datetime.date:
+    """Parse a date string in common Swedish bank formats.
+
+    Supports: YYYY-MM-DD, YYYY/MM/DD, YYYY.MM.DD
+    """
+    date_string = date_string.strip()
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d"):
+        try:
+            return datetime.datetime.strptime(date_string, fmt).date()
+        except ValueError:
+            continue
+    raise ValueError(f"Unable to parse date: {date_string!r}")
+
+
+def parse_amount(amount_string: str) -> float:
+    """Parse a Swedish-format amount string to float.
+
+    Handles comma decimals, strips 'kr' and spaces. Keeps sign as-is.
+    """
+    s = amount_string.strip()
+    s = s.replace("kr", "")
+    s = s.replace(" ", "")
+    s = s.replace("\xa0", "")  # non-breaking space
+    s = s.replace(",", ".")
+    return float(s)
+
+
+def detect_format(header_row: list[str]) -> str | None:
+    """Detect the CSV format from the header row.
+
+    Returns the format name ('nordea', 'ica') or None if unrecognized.
+    """
+    header_set = set(header_row)
+    for fmt_name, fmt_def in CSV_FORMATS.items():
+        if all(h in header_set for h in fmt_def["detect_headers"]):
+            return fmt_name
+    return None
+
+
+class CSVImporter:
+    """Imports bank CSV files into the transactions table."""
+
+    def __init__(self, db_handler):
+        """
+        Args:
+            db_handler: A connected DatabaseHandler instance.
+        """
+        self.db = db_handler
+
+    def import_file(self, file_path: str, account_name: str = None) -> dict:
+        """Import a CSV file into the database.
+
+        Args:
+            file_path: Path to the CSV file.
+            account_name: Override account name. If None, derived from filename.
+
+        Returns:
+            dict with 'imported', 'skipped' (duplicates), 'errors' counts.
+        """
+        if account_name is None:
+            account_name = os.path.basename(file_path).split(".")[0]
+
+        imported = 0
+        skipped = 0
+        errors = 0
+
+        with open(file_path, newline="", encoding="utf-8-sig") as f:
+            reader = csv.reader(f, delimiter=";")
+            header_row = next(reader)
+
+            fmt_name = detect_format(header_row)
+            if fmt_name is None:
+                raise ValueError(
+                    f"Unrecognized CSV format. Header: {header_row}"
+                )
+
+            fmt = CSV_FORMATS[fmt_name]
+            date_idx = header_row.index(fmt["date_col"])
+            amount_idx = header_row.index(fmt["amount_col"])
+            desc_idx = header_row.index(fmt["desc_col"])
+
+            cur = self.db.get_cursor()
+
+            for row in reader:
+                if not row or all(cell.strip() == "" for cell in row):
+                    continue
+
+                try:
+                    txn_date = parse_date(row[date_idx])
+                    amount = parse_amount(row[amount_idx])
+                    description = row[desc_idx].strip()
+                except (ValueError, IndexError) as e:
+                    errors += 1
+                    continue
+
+                try:
+                    cur.execute(
+                        "INSERT INTO transactions (date, description, amount, account, source_file) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (txn_date, description, amount, account_name, file_path),
+                    )
+                    imported += 1
+                except Exception:
+                    skipped += 1
+
+            self.db.commit()
+
+        return {"imported": imported, "skipped": skipped, "errors": errors}
