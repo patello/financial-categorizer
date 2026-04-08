@@ -291,3 +291,118 @@ class TestAutoCategorize:
         # Now uncategorized
         cur.execute("SELECT category_id FROM transactions WHERE id = ?", (txn_id,))
         assert cur.fetchone()[0] is None
+
+
+class TestUpdateCategory:
+    def test_rename(self, db, cat):
+        cid = cat.add_category("Food")
+        cat.update_category(cid, name="Groceries")
+        result = cat.get_category_by_name("Groceries")
+        assert result is not None
+        assert result["id"] == cid
+
+    def test_reparent(self, db, cat):
+        root_id = cat.add_category("Expenses")
+        child_id = cat.add_category("Food", parent_id=root_id)
+        other_root = cat.add_category("Other")
+
+        cat.update_category(child_id, parent_id=other_root)
+
+        children = cat.get_children(other_root)
+        assert children[0]["id"] == child_id
+
+    def test_no_change_returns_false(self, cat):
+        cid = cat.add_category("Test")
+        assert cat.update_category(cid) is False
+
+
+class TestDeleteCategory:
+    def test_delete_empty_category(self, db, cat):
+        cid = cat.add_category("Unused")
+        assert cat.delete_category(cid) is True
+        assert cat.get_category_by_name("Unused") is None
+
+    def test_delete_nonexistent_returns_false(self, cat):
+        assert cat.delete_category(9999) is False
+
+    def test_children_require_reassign(self, db, cat):
+        parent_id = cat.add_category("Parent")
+        cat.add_category("Child", parent_id=parent_id)
+
+        with pytest.raises(ValueError, match="child"):
+            cat.delete_category(parent_id)
+
+    def test_reassign_children(self, db, cat):
+        old_parent = cat.add_category("Old Parent")
+        new_parent = cat.add_category("New Parent")
+        child_id = cat.add_category("Child", parent_id=old_parent)
+
+        cat.delete_category(old_parent, reassign=new_parent)
+
+        # Child now under new parent
+        children = cat.get_children(new_parent)
+        assert len(children) == 1
+        assert children[0]["id"] == child_id
+
+    def test_promote_children(self, db, cat):
+        root_id = cat.add_category("Root")
+        mid_id = cat.add_category("Mid", parent_id=root_id)
+        leaf_id = cat.add_category("Leaf", parent_id=mid_id)
+
+        # Delete mid, promote leaf to root
+        cat.delete_category(mid_id, reassign=root_id)
+
+        children = cat.get_children(root_id)
+        assert leaf_id in [c["id"] for c in children]
+
+    def test_rules_require_reassign_or_force(self, db, cat):
+        food_id = cat.add_category("Food")
+        cat.add_rule(food_id, "ICA", match_type="regex")
+
+        with pytest.raises(ValueError, match="rule"):
+            cat.delete_category(food_id)
+
+    def test_force_deletes_rules(self, db, cat):
+        food_id = cat.add_category("Food")
+        rule_id = cat.add_rule(food_id, "ICA", match_type="regex")
+
+        cat.delete_category(food_id, force=True)
+
+        rules = cat.list_rules()
+        assert len(rules) == 0
+
+    def test_reassign_rules(self, db, cat):
+        old_id = cat.add_category("Old")
+        new_id = cat.add_category("New")
+        txn_id = _add_txn(db, "ICA Store")
+
+        cat.add_rule(old_id, "ICA", match_type="regex")
+        cat.delete_category(old_id, reassign=new_id)
+
+        # Transaction should be categorized under new via reassigned rule
+        cur = db.get_cursor()
+        cur.execute("SELECT category_id FROM transactions WHERE id = ?", (txn_id,))
+        assert cur.fetchone()[0] == new_id
+
+    def test_reassign_manual_matches(self, db, cat):
+        old_id = cat.add_category("Old")
+        new_id = cat.add_category("New")
+        txn_id = _add_txn(db, "Something")
+
+        cat.add_manual_match(txn_id, old_id)
+        cat.delete_category(old_id, reassign=new_id)
+
+        cur = db.get_cursor()
+        cur.execute("SELECT category_id FROM transactions WHERE id = ?", (txn_id,))
+        assert cur.fetchone()[0] == new_id
+
+    def test_transactions_uncategorized_without_reassign(self, db, cat):
+        food_id = cat.add_category("Food")
+        txn_id = _add_txn(db, "ICA Store")
+        cat.add_manual_match(txn_id, food_id)
+
+        cat.delete_category(food_id, force=True)
+
+        cur = db.get_cursor()
+        cur.execute("SELECT category_id FROM transactions WHERE id = ?", (txn_id,))
+        assert cur.fetchone()[0] is None

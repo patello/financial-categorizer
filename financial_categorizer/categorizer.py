@@ -356,3 +356,128 @@ class Categorizer:
             {"id": row[0], "name": row[1], "parent_id": row[2], "description": row[3]}
             for row in cur.fetchall()
         ]
+
+    def update_category(
+        self,
+        category_id: int,
+        name: str | None = None,
+        parent_id: int | None = ...,  # sentinel to distinguish None from unset
+        description: str | None = ...,  # sentinel
+    ) -> bool:
+        """Update a category's name, parent, or description.
+
+        Only updates fields that are explicitly passed. Use None to clear
+        parent_id or description. Returns True if any change was made.
+        """
+        updates = []
+        params = []
+        if name is not None:
+            updates.append("name = ?")
+            params.append(name)
+        if parent_id is not ...:
+            updates.append("parent_id = ?")
+            params.append(parent_id)
+        if description is not ...:
+            updates.append("description = ?")
+            params.append(description)
+
+        if not updates:
+            return False
+
+        params.append(category_id)
+        cur = self.db.get_cursor()
+        cur.execute(
+            f"UPDATE categories SET {', '.join(updates)} WHERE id = ?",
+            params,
+        )
+        self.db.commit()
+        return cur.rowcount > 0
+
+    def delete_category(
+        self,
+        category_id: int,
+        reassign: int | None = None,
+        force: bool = False,
+    ) -> bool:
+        """Delete a category.
+
+        Args:
+            category_id: The category to delete.
+            reassign: Category ID to move children, rules, and manual matches to.
+                Required if the category has children. When provided, rules and
+                manual matches are also reassigned. If None, rules and manual
+                matches are deleted.
+            force: If True, allow deleting rules/matches without reassignment.
+                Children are NEVER deleted — reassign is always required if
+                children exist.
+
+        Returns True if the category was deleted.
+
+        Raises:
+            ValueError: If children exist without reassign, or if there are
+                rules/matches without reassign and force is False.
+        """
+        cur = self.db.get_cursor()
+
+        # Check category exists
+        cur.execute("SELECT id, parent_id FROM categories WHERE id = ?", (category_id,))
+        cat_row = cur.fetchone()
+        if not cat_row:
+            return False
+
+        # Check for children — always require reassign
+        cur.execute("SELECT COUNT(*) FROM categories WHERE parent_id = ?", (category_id,))
+        child_count = cur.fetchone()[0]
+        if child_count > 0 and reassign is None:
+            raise ValueError(
+                f"Category {category_id} has {child_count} child(ren). "
+                "reassign is required — children cannot be deleted or orphaned."
+            )
+
+        # Check for rules and manual matches
+        cur.execute(
+            "SELECT COUNT(*) FROM match_rules WHERE category_id = ?", (category_id,)
+        )
+        rule_count = cur.fetchone()[0]
+
+        cur.execute(
+            "SELECT COUNT(*) FROM id_matches WHERE category_id = ?", (category_id,)
+        )
+        match_count = cur.fetchone()[0]
+
+        if (rule_count > 0 or match_count > 0) and reassign is None and not force:
+            raise ValueError(
+                f"Category {category_id} has {rule_count} rule(s) and "
+                f"{match_count} manual match(es). Provide reassign or use force=True."
+            )
+
+        if reassign is not None:
+            # Reassign children
+            cur.execute(
+                "UPDATE categories SET parent_id = ? WHERE parent_id = ?",
+                (reassign, category_id),
+            )
+            # Reassign rules
+            cur.execute(
+                "UPDATE match_rules SET category_id = ? WHERE category_id = ?",
+                (reassign, category_id),
+            )
+            # Reassign manual matches
+            cur.execute(
+                "UPDATE id_matches SET category_id = ? WHERE category_id = ?",
+                (reassign, category_id),
+            )
+        else:
+            # Delete rules (cascade handles match_rules via FK)
+            cur.execute("DELETE FROM match_rules WHERE category_id = ?", (category_id,))
+            # Delete manual matches
+            cur.execute("DELETE FROM id_matches WHERE category_id = ?", (category_id,))
+
+        # Delete the category itself (ON DELETE SET NULL handles transactions)
+        cur.execute("DELETE FROM categories WHERE id = ?", (category_id,))
+        self.db.commit()
+
+        # Re-categorize to reflect changes
+        self.categorize_all()
+
+        return True
