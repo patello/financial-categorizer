@@ -58,15 +58,16 @@ class TestRecalculateAdjustedAmounts:
         db.recalculate_adjusted_amounts()
         assert _get_adjusted(db, tid) == pytest.approx(30000.0)
 
-    def test_recalc_specific_account_only(self, db):
+    def test_recalc_all_accounts(self, db):
+        """Recalc always touches all accounts."""
         acct1 = db.add_account("Shared", ownership_ratio=0.5)
         acct2 = db.add_account("Personal", ownership_ratio=1.0)
         t1 = _add_txn(db, datetime.date(2026, 1, 1), "Rent", -8000.0, acct1)
         t2 = _add_txn(db, datetime.date(2026, 1, 1), "Coffee", -40.0, acct2)
 
-        db.recalculate_adjusted_amounts(acct1)
+        db.recalculate_adjusted_amounts()
         assert _get_adjusted(db, t1) == pytest.approx(-4000.0)
-        assert _get_adjusted(db, t2) is None
+        assert _get_adjusted(db, t2) == pytest.approx(-40.0)
 
     def test_recalc_returns_row_count(self, db):
         acct = db.add_account("Personal")

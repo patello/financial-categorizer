@@ -318,15 +318,12 @@ class DatabaseHandler:
 
         # If ownership_ratio changed, recalc adjusted_amount for this account's transactions
         if changed and old and old["ownership_ratio"] != ownership_ratio:
-            self.recalculate_adjusted_amounts(account_id)
+            self.recalculate_adjusted_amounts()
 
         return changed
 
-    def recalculate_adjusted_amounts(self, account_id: int | None = None) -> int:
-        """Recalculate adjusted_amount for transactions.
-
-        If account_id is given, only recalc transactions on that account.
-        Otherwise recalc all transactions.
+    def recalculate_adjusted_amounts(self) -> int:
+        """Recalculate adjusted_amount for all transactions.
 
         adjusted_amount = amount * account.ownership_ratio
         (Links will be layered on top in step 3.)
@@ -334,18 +331,10 @@ class DatabaseHandler:
         Returns the number of rows updated.
         """
         cur = self.get_cursor()
-        if account_id is not None:
-            cur.execute(
-                "UPDATE transactions SET adjusted_amount = amount * "
-                "(SELECT ownership_ratio FROM accounts WHERE accounts.id = transactions.account_id) "
-                "WHERE account_id = ?",
-                (account_id,),
-            )
-        else:
-            cur.execute(
-                "UPDATE transactions SET adjusted_amount = amount * "
-                "(SELECT ownership_ratio FROM accounts WHERE accounts.id = transactions.account_id)"
-            )
+        cur.execute(
+            "UPDATE transactions SET adjusted_amount = amount * "
+            "(SELECT ownership_ratio FROM accounts WHERE accounts.id = transactions.account_id)"
+        )
         self.commit()
         return cur.rowcount
 
