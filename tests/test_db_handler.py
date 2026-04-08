@@ -28,6 +28,7 @@ class TestDatabaseHandler:
         assert "match_rules" in tables
         assert "id_matches" in tables
         assert "metadata" in tables
+        assert "accounts" in tables
 
     def test_connect_disconnect(self):
         """Can connect and disconnect from a file-based DB."""
@@ -57,11 +58,12 @@ class TestDatabaseHandler:
 
     def test_insert_transaction(self, db):
         """Can insert and retrieve a transaction."""
+        aid = db.add_account("checking")
         cur = db.get_cursor()
         cur.execute(
-            "INSERT INTO transactions (date, description, amount, account) "
+            "INSERT INTO transactions (date, description, amount, account_id) "
             "VALUES (?, ?, ?, ?)",
-            (date(2024, 1, 15), "Test purchase", -100.0, "checking"),
+            (date(2024, 1, 15), "Test purchase", -100.0, aid),
         )
         db.commit()
 
@@ -72,19 +74,20 @@ class TestDatabaseHandler:
 
     def test_unique_constraint(self, db):
         """Duplicate transactions are rejected."""
+        aid = db.add_account("checking")
         cur = db.get_cursor()
         cur.execute(
-            "INSERT INTO transactions (date, description, amount, account) "
+            "INSERT INTO transactions (date, description, amount, account_id) "
             "VALUES (?, ?, ?, ?)",
-            (date(2024, 1, 15), "Dupe", -50.0, "checking"),
+            (date(2024, 1, 15), "Dupe", -50.0, aid),
         )
         db.commit()
 
         with pytest.raises(Exception):
             cur.execute(
-                "INSERT INTO transactions (date, description, amount, account) "
+                "INSERT INTO transactions (date, description, amount, account_id) "
                 "VALUES (?, ?, ?, ?)",
-                (date(2024, 1, 15), "Dupe", -50.0, "checking"),
+                (date(2024, 1, 15), "Dupe", -50.0, aid),
             )
 
     def test_category_hierarchy(self, db):
@@ -142,11 +145,12 @@ class TestDatabaseHandler:
 
     def test_id_matches_unique(self, db):
         """id_matches enforces one override per transaction."""
+        aid = db.add_account("checking")
         cur = db.get_cursor()
         cur.execute(
-            "INSERT INTO transactions (date, description, amount, account) "
+            "INSERT INTO transactions (date, description, amount, account_id) "
             "VALUES (?, ?, ?, ?)",
-            (date(2024, 1, 15), "Txn", -50.0, "checking"),
+            (date(2024, 1, 15), "Txn", -50.0, aid),
         )
         txn_id = cur.lastrowid
         cur.execute("INSERT INTO categories (name) VALUES (?)", ("Cat1",))

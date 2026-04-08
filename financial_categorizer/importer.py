@@ -79,18 +79,27 @@ class CSVImporter:
         """
         self.db = db_handler
 
-    def import_file(self, file_path: str, account_name: str = None) -> dict:
+    def import_file(self, file_path: str, account_name: str = None, auto_create_account: bool = True) -> dict:
         """Import a CSV file into the database.
 
         Args:
             file_path: Path to the CSV file.
             account_name: Override account name. If None, derived from filename.
+            auto_create_account: If True, create the account if it doesn't exist.
 
         Returns:
             dict with 'imported', 'skipped' (duplicates), 'errors' counts.
         """
         if account_name is None:
             account_name = os.path.basename(file_path).split(".")[0]
+
+        if auto_create_account:
+            account_id = self.db.ensure_account(account_name)
+        else:
+            acct = self.db.get_account_by_name(account_name)
+            if not acct:
+                raise ValueError(f"Account '{account_name}' not found. Create it first or use auto_create_account=True.")
+            account_id = acct["id"]
 
         imported = 0
         skipped = 0
@@ -138,8 +147,8 @@ class CSVImporter:
                 if status == "settled":
                     cur.execute(
                         "SELECT id FROM transactions "
-                        "WHERE description = ? AND account = ? AND status = 'pending'",
-                        (description, account_name),
+                        "WHERE description = ? AND account_id = ? AND status = 'pending'",
+                        (description, account_id),
                     )
                     pending_row = cur.fetchone()
                     if pending_row:
@@ -154,9 +163,9 @@ class CSVImporter:
 
                 try:
                     cur.execute(
-                        "INSERT INTO transactions (date, description, amount, account, source_file, status) "
+                        "INSERT INTO transactions (date, description, amount, account_id, source_file, status) "
                         "VALUES (?, ?, ?, ?, ?, ?)",
-                        (txn_date, description, amount, account_name, file_path, status),
+                        (txn_date, description, amount, account_id, file_path, status),
                     )
                     imported += 1
                 except Exception:

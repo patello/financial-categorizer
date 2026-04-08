@@ -178,11 +178,12 @@ class TestAccountName:
         try:
             importer.import_file(path)
             cur = db.get_cursor()
-            cur.execute("SELECT DISTINCT account FROM transactions")
-            # Should use the filename without extension
+            cur.execute(
+                "SELECT DISTINCT a.name FROM transactions t "
+                "JOIN accounts a ON t.account_id = a.id"
+            )
             accounts = [row[0] for row in cur.fetchall()]
             assert len(accounts) == 1
-            # Filename is a temp file, just check it's not empty
             assert accounts[0] != ""
         finally:
             os.unlink(path)
@@ -192,8 +193,30 @@ class TestAccountName:
         try:
             importer.import_file(path, account_name="my_checking")
             cur = db.get_cursor()
-            cur.execute("SELECT DISTINCT account FROM transactions")
+            cur.execute(
+                "SELECT DISTINCT a.name FROM transactions t "
+                "JOIN accounts a ON t.account_id = a.id"
+            )
             assert cur.fetchone()[0] == "my_checking"
+        finally:
+            os.unlink(path)
+
+    def test_auto_creates_account(self, importer, db):
+        path = _write_csv(NORDEA_CSV)
+        try:
+            importer.import_file(path, account_name="auto_account")
+            acct = db.get_account_by_name("auto_account")
+            assert acct is not None
+            assert acct["type"] == "personal"
+        finally:
+            os.unlink(path)
+
+    def test_no_auto_account_raises(self, importer, db):
+        path = _write_csv(NORDEA_CSV)
+        try:
+            with pytest.raises(ValueError, match="not found"):
+                importer.import_file(path, account_name="missing",
+                                     auto_create_account=False)
         finally:
             os.unlink(path)
 

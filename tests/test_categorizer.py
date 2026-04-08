@@ -24,10 +24,11 @@ def _add_txn(db, desc, amount=-100.0, dt=None, account="checking"):
     """Helper to insert a transaction and return its id."""
     if dt is None:
         dt = date(2024, 1, 15)
+    aid = db.ensure_account(account)
     cur = db.get_cursor()
     cur.execute(
-        "INSERT INTO transactions (date, description, amount, account) VALUES (?, ?, ?, ?)",
-        (dt, desc, amount, account),
+        "INSERT INTO transactions (date, description, amount, account_id) VALUES (?, ?, ?, ?)",
+        (dt, desc, amount, aid),
     )
     db.commit()
     return cur.lastrowid

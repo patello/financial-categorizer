@@ -34,7 +34,10 @@ def cmd_import(args):
         total = {"imported": 0, "skipped": 0, "errors": 0, "settled_pending": 0}
 
         for path in args.files:
-            result = importer.import_file(path, account_name=args.account)
+            result = importer.import_file(
+                path, account_name=args.account,
+                auto_create_account=not args.no_auto_account,
+            )
             for k in total:
                 total[k] += result.get(k, 0)
             logger.info(
@@ -237,6 +240,73 @@ def cmd_uncategorized(args):
         db.disconnect()
 
 
+def cmd_accounts(args):
+    db = get_db(args.db)
+    try:
+        accounts = db.list_accounts()
+        if not accounts:
+            print("No accounts defined.")
+            return
+        for a in accounts:
+            print(f"  [{a['id']}] {a['name']:<20} type={a['type']:<10} "
+                  f"ownership={a['ownership_ratio']:.2f}  {a['currency']}"
+                  f"{('  ' + a['description']) if a['description'] else ''}")
+    finally:
+        db.disconnect()
+
+
+def cmd_add_account(args):
+    db = get_db(args.db)
+    try:
+        aid = db.add_account(
+            args.name, type=args.type,
+            ownership_ratio=args.ownership,
+            currency=args.currency,
+            description=args.description,
+        )
+        print(f"Created account '{args.name}' (id={aid})")
+    finally:
+        db.disconnect()
+
+
+def cmd_update_account(args):
+    db = get_db(args.db)
+    try:
+        kwargs = {}
+        if args.name is not None:
+            kwargs["name"] = args.name
+        if args.type is not None:
+            kwargs["type"] = args.type
+        if args.ownership is not None:
+            kwargs["ownership_ratio"] = args.ownership
+        if args.currency is not None:
+            kwargs["currency"] = args.currency
+        if args.description is not None:
+            kwargs["description"] = args.description
+        if not kwargs:
+            print("Nothing to update.")
+            return
+        updated = db.update_account(args.id, **kwargs)
+        print(f"Updated account {args.id}" if updated else f"Account {args.id} not found")
+    finally:
+        db.disconnect()
+
+
+def cmd_delete_account(args):
+    db = get_db(args.db)
+    try:
+        deleted = db.delete_account(args.id)
+        if deleted:
+            print(f"Deleted account {args.id}")
+        else:
+            print(f"Account {args.id} not found")
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        db.disconnect()
+
+
 def cmd_manual_match(args):
     db = get_db(args.db)
     try:
@@ -260,7 +330,41 @@ def main():
     p_import = subparsers.add_parser("import", help="Import CSV transactions")
     p_import.add_argument("files", nargs="+", help="CSV files to import")
     p_import.add_argument("--account", help="Account name (default: derived from filename)")
+    p_import.add_argument("--no-auto-account", action="store_true",
+                          help="Don't auto-create account if missing (raises error)")
     p_import.set_defaults(func=cmd_import)
+
+    # accounts
+    p_accounts = subparsers.add_parser("accounts", help="List all accounts")
+    p_accounts.set_defaults(func=cmd_accounts)
+
+    # add-account
+    p_add_acct = subparsers.add_parser("add-account", help="Add a new account")
+    p_add_acct.add_argument("name", help="Account name")
+    p_add_acct.add_argument("--type", default="personal",
+                            choices=["personal", "shared", "savings", "external"],
+                            help="Account type (default: personal)")
+    p_add_acct.add_argument("--ownership", type=float, default=1.0,
+                            help="Ownership ratio 0.0-1.0 (default: 1.0)")
+    p_add_acct.add_argument("--currency", default="SEK", help="Currency (default: SEK)")
+    p_add_acct.add_argument("--description", help="Account description")
+    p_add_acct.set_defaults(func=cmd_add_account)
+
+    # update-account
+    p_upd_acct = subparsers.add_parser("update-account", help="Update an account")
+    p_upd_acct.add_argument("id", type=int, help="Account ID")
+    p_upd_acct.add_argument("--name", help="New name")
+    p_upd_acct.add_argument("--type", choices=["personal", "shared", "savings", "external"],
+                            help="New type")
+    p_upd_acct.add_argument("--ownership", type=float, help="New ownership ratio")
+    p_upd_acct.add_argument("--currency", help="New currency")
+    p_upd_acct.add_argument("--description", help="New description")
+    p_upd_acct.set_defaults(func=cmd_update_account)
+
+    # delete-account
+    p_del_acct = subparsers.add_parser("delete-account", help="Delete an account")
+    p_del_acct.add_argument("id", type=int, help="Account ID")
+    p_del_acct.set_defaults(func=cmd_delete_account)
 
     # categories
     p_cats = subparsers.add_parser("categories", help="List all categories")

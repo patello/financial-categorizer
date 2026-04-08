@@ -108,12 +108,24 @@ class DatabaseHandler:
             )""")
 
         cur.execute("""
+            CREATE TABLE IF NOT EXISTS accounts(
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                name            TEXT UNIQUE NOT NULL,
+                type            TEXT NOT NULL DEFAULT 'personal'
+                                CHECK(type IN ('personal','shared','savings','external')),
+                ownership_ratio REAL NOT NULL DEFAULT 1.0
+                                CHECK(ownership_ratio > 0 AND ownership_ratio <= 1.0),
+                currency        TEXT NOT NULL DEFAULT 'SEK',
+                description     TEXT
+            )""")
+
+        cur.execute("""
             CREATE TABLE IF NOT EXISTS transactions(
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 date        DATE NOT NULL,
                 description TEXT NOT NULL,
                 amount      REAL NOT NULL,
-                account     TEXT NOT NULL,
+                account_id  INTEGER NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
                 source_file TEXT,
                 imported_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
@@ -121,7 +133,7 @@ class DatabaseHandler:
                 status      TEXT NOT NULL DEFAULT 'settled'
                             CHECK(status IN ('pending','settled')),
                 matched_rule_id INTEGER REFERENCES match_rules(id) ON DELETE SET NULL,
-                UNIQUE(date, description, amount, account, status)
+                UNIQUE(date, description, amount, account_id, status)
             )""")
 
         cur.execute("""
@@ -178,3 +190,145 @@ class DatabaseHandler:
         cur = self.get_cursor()
         cur.execute("SELECT key, value FROM metadata")
         return dict(cur.fetchall())
+
+    # ------------------------------------------------------------------ #
+    #  Account helpers
+    # ------------------------------------------------------------------ #
+
+    def add_account(
+        self,
+        name: str,
+        type: str = "personal",
+        ownership_ratio: float = 1.0,
+        currency: str = "SEK",
+        description: str = None,
+    ) -> int:
+        """Add a new account. Returns the account id."""
+        cur = self.get_cursor()
+        cur.execute(
+            "INSERT INTO accounts (name, type, ownership_ratio, currency, description) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (name, type, ownership_ratio, currency, description),
+        )
+        self.commit()
+        return cur.lastrowid
+
+    def get_account(self, account_id: int) -> dict | None:
+        """Look up an account by ID."""
+        cur = self.get_cursor()
+        cur.execute(
+            "SELECT id, name, type, ownership_ratio, currency, description "
+            "FROM accounts WHERE id = ?",
+            (account_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0],
+            "name": row[1],
+            "type": row[2],
+            "ownership_ratio": row[3],
+            "currency": row[4],
+            "description": row[5],
+        }
+
+    def get_account_by_name(self, name: str) -> dict | None:
+        """Look up an account by name."""
+        cur = self.get_cursor()
+        cur.execute(
+            "SELECT id, name, type, ownership_ratio, currency, description "
+            "FROM accounts WHERE name = ?",
+            (name,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0],
+            "name": row[1],
+            "type": row[2],
+            "ownership_ratio": row[3],
+            "currency": row[4],
+            "description": row[5],
+        }
+
+    def list_accounts(self) -> list[dict]:
+        """Return all accounts."""
+        cur = self.get_cursor()
+        cur.execute(
+            "SELECT id, name, type, ownership_ratio, currency, description "
+            "FROM accounts ORDER BY name"
+        )
+        return [
+            {
+                "id": row[0],
+                "name": row[1],
+                "type": row[2],
+                "ownership_ratio": row[3],
+                "currency": row[4],
+                "description": row[5],
+            }
+            for row in cur.fetchall()
+        ]
+
+    def update_account(
+        self,
+        account_id: int,
+        name: str | None = None,
+        type: str | None = None,
+        ownership_ratio: float | None = None,
+        currency: str | None = None,
+        description: str | None = ...,
+    ) -> bool:
+        """Update an account's fields. Returns True if any change was made."""
+        updates = []
+        params = []
+        if name is not None:
+            updates.append("name = ?")
+            params.append(name)
+        if type is not None:
+            updates.append("type = ?")
+            params.append(type)
+        if ownership_ratio is not None:
+            updates.append("ownership_ratio = ?")
+            params.append(ownership_ratio)
+        if currency is not None:
+            updates.append("currency = ?")
+            params.append(currency)
+        if description is not ...:
+            updates.append("description = ?")
+            params.append(description)
+
+        if not updates:
+            return False
+
+        params.append(account_id)
+        cur = self.get_cursor()
+        cur.execute(
+            f"UPDATE accounts SET {', '.join(updates)} WHERE id = ?",
+            params,
+        )
+        self.commit()
+        return cur.rowcount > 0
+
+    def delete_account(self, account_id: int) -> bool:
+        """Delete an account. Fails if transactions reference it (ON DELETE RESTRICT).
+
+        Returns True if the account was deleted.
+        """
+        cur = self.get_cursor()
+        cur.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
+        self.commit()
+        return cur.rowcount > 0
+
+    def ensure_account(self, name: str, **kwargs) -> int:
+        """Get account ID by name, creating it if it doesn't exist.
+
+        Extra kwargs passed to add_account on creation.
+        Returns the account ID.
+        """
+        existing = self.get_account_by_name(name)
+        if existing:
+            return existing["id"]
+        return self.add_account(name, **kwargs)

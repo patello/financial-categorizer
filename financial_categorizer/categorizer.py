@@ -267,9 +267,10 @@ class Categorizer:
         """Return all transactions without a category."""
         cur = self.db.get_cursor()
         cur.execute(
-            "SELECT id, date, description, amount, account "
-            "FROM transactions WHERE category_id IS NULL "
-            "ORDER BY date DESC"
+            "SELECT t.id, t.date, t.description, t.amount, a.name "
+            "FROM transactions t JOIN accounts a ON t.account_id = a.id "
+            "WHERE t.category_id IS NULL "
+            "ORDER BY t.date DESC"
         )
         return [
             {
@@ -291,7 +292,8 @@ class Categorizer:
         """
         cur = self.db.get_cursor()
         cur.execute(
-            "SELECT id, date, description, amount, account FROM transactions"
+            "SELECT t.id, t.date, t.description, t.amount, a.name "
+            "FROM transactions t JOIN accounts a ON t.account_id = a.id"
         )
         matches = []
         for row in cur.fetchall():
