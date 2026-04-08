@@ -257,3 +257,37 @@ class TestCategoryManagement:
         children = cat.get_children(root_id)
         child_ids = {c["id"] for c in children}
         assert child_ids == {c1, c2}
+
+
+class TestAutoCategorize:
+    def test_add_rule_auto_categorizes(self, db, cat):
+        """Adding a rule automatically re-categorizes all transactions."""
+        food_id = _add_cat(cat, "Food")
+        _add_txn(db, "ICA Store 1")
+        _add_txn(db, "ICA Store 2", dt=date(2024, 1, 16))
+        _add_txn(db, "Unknown thing", dt=date(2024, 1, 17))
+
+        cat.add_rule(food_id, "ICA", match_type="regex")
+
+        cur = db.get_cursor()
+        cur.execute("SELECT category_id FROM transactions WHERE description LIKE 'ICA%'")
+        for row in cur.fetchall():
+            assert row[0] == food_id
+
+    def test_remove_rule_auto_recategorizes(self, db, cat):
+        """Removing a rule re-categorizes, leaving former matches uncategorized."""
+        food_id = _add_cat(cat, "Food")
+        txn_id = _add_txn(db, "ICA Store")
+
+        rule_id = cat.add_rule(food_id, "ICA", match_type="regex")
+
+        # Verified categorized
+        cur = db.get_cursor()
+        cur.execute("SELECT category_id FROM transactions WHERE id = ?", (txn_id,))
+        assert cur.fetchone()[0] == food_id
+
+        cat.remove_rule(rule_id)
+
+        # Now uncategorized
+        cur.execute("SELECT category_id FROM transactions WHERE id = ?", (txn_id,))
+        assert cur.fetchone()[0] is None

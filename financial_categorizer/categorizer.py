@@ -196,7 +196,10 @@ class Categorizer:
         match_type: str = "regex",
         priority: int = 0,
     ) -> int:
-        """Add a new match rule. Returns the rule id."""
+        """Add a new match rule and re-categorize all transactions.
+
+        Returns the rule id.
+        """
         cur = self.db.get_cursor()
         cur.execute(
             "INSERT INTO match_rules (category_id, pattern, match_type, priority) "
@@ -204,14 +207,21 @@ class Categorizer:
             (category_id, pattern, match_type, priority),
         )
         self.db.commit()
+        self.categorize_all()
         return cur.lastrowid
 
     def remove_rule(self, rule_id: int) -> bool:
-        """Remove a match rule. Returns True if a rule was deleted."""
+        """Remove a match rule and re-categorize all transactions.
+
+        Returns True if a rule was deleted.
+        """
         cur = self.db.get_cursor()
         cur.execute("DELETE FROM match_rules WHERE id = ?", (rule_id,))
+        deleted = cur.rowcount > 0
         self.db.commit()
-        return cur.rowcount > 0
+        if deleted:
+            self.categorize_all()
+        return deleted
 
     def list_rules(self) -> list[dict]:
         """Return all match rules ordered by priority."""
