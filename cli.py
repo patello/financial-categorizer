@@ -10,9 +10,10 @@ import logging
 import sys
 from pathlib import Path
 
-from financial_categorizer.db_handler import DatabaseHandler
+from financial_categorizer.db_handler import DatabaseHandler, TransferManager
 from financial_categorizer.categorizer import Categorizer
 from financial_categorizer.importer import CSVImporter
+from financial_categorizer.stats import Stats
 
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -317,6 +318,136 @@ def cmd_manual_match(args):
         db.disconnect()
 
 
+def cmd_stats_summary(args):
+    db = get_db(args.db)
+    try:
+        stats = Stats(db)
+        rows = stats.monthly_summary(month=args.month)
+        if not rows:
+            print("No data found.")
+            return
+        for r in rows:
+            print(f"{r['month']}  income={r['total_income']:>10.2f}  "
+                  f"expenses={r['total_expenses']:>10.2f}  net={r['net']:>10.2f}")
+    finally:
+        db.disconnect()
+
+
+def cmd_stats_category(args):
+    db = get_db(args.db)
+    try:
+        cat = Categorizer(db)
+        stats = Stats(db)
+
+        lookup = cat.get_category_by_name(args.name)
+        if not lookup:
+            print(f"Category '{args.name}' not found.")
+            sys.exit(1)
+
+        result = stats.category_total(
+            lookup["id"], month=args.month,
+            date_from=args.from_date, date_to=args.to_date,
+        )
+        print(f"{args.name}: total={result['total']:>10.2f}  count={result['count']}")
+    finally:
+        db.disconnect()
+
+
+def cmd_stats_trend(args):
+    db = get_db(args.db)
+    try:
+        cat = Categorizer(db)
+        stats = Stats(db)
+
+        lookup = cat.get_category_by_name(args.name)
+        if not lookup:
+            print(f"Category '{args.name}' not found.")
+            sys.exit(1)
+
+        rows = stats.trend(
+            lookup["id"],
+            date_from=args.from_date, date_to=args.to_date,
+        )
+        if not rows:
+            print("No data found.")
+            return
+        print(f"Trend for {args.name}:")
+        for r in rows:
+            print(f"  {r['month']}  total={r['total']:>10.2f}  count={r['count']}")
+    finally:
+        db.disconnect()
+
+
+def cmd_stats_top(args):
+    db = get_db(args.db)
+    try:
+        stats = Stats(db)
+        rows = stats.top_spending(month=args.month, limit=args.limit)
+        if not rows:
+            print("No spending data found.")
+            return
+        print(f"Top spending{(' for ' + args.month) if args.month else ''}:")
+        for r in rows:
+            print(f"  {r['category_name']:<25} {r['total']:>10.2f}  ({r['count']} txns)")
+    finally:
+        db.disconnect()
+
+
+def cmd_recalculate(args):
+    db = get_db(args.db)
+    try:
+        count = db.recalculate_adjusted_amounts()
+        print(f"Recalculated adjusted_amount for {count} transactions")
+    finally:
+        db.disconnect()
+
+
+def cmd_link(args):
+    db = get_db(args.db)
+    try:
+        tm = TransferManager(db)
+        link_id = tm.link_transactions(
+            args.from_id, args.to_id, args.type,
+            ratio=args.ratio, comment=args.comment,
+        )
+        print(f"Created link {link_id} ({args.type})")
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        db.disconnect()
+
+
+def cmd_unlink(args):
+    db = get_db(args.db)
+    try:
+        tm = TransferManager(db)
+        removed = tm.unlink(args.id)
+        if removed:
+            print(f"Removed link {args.id}")
+        else:
+            print(f"Link {args.id} not found")
+    finally:
+        db.disconnect()
+
+
+def cmd_links(args):
+    db = get_db(args.db)
+    try:
+        tm = TransferManager(db)
+        links = tm.list_links(link_type=args.type)
+        if not links:
+            print("No links found.")
+            return
+        for l in links:
+            to_str = f" -> {l['to_transaction_id']}" if l['to_transaction_id'] else ""
+            print(f"  [{l['id']}] {l['from_transaction_id']}{to_str}  "
+                  f"{l['link_type']}  ratio={l['ratio']}  "
+                  f"{(l['comment'] or '')}")
+    finally:
+        db.disconnect()
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="financial-categorizer",
@@ -432,6 +563,55 @@ def main():
     p_manual.add_argument("transaction", type=int, help="Transaction ID")
     p_manual.add_argument("category", type=int, help="Category ID")
     p_manual.set_defaults(func=cmd_manual_match)
+
+    # stats summary
+    p_stats_summary = subparsers.add_parser("stats-summary", help="Monthly income/expenses/net")
+    p_stats_summary.add_argument("--month", help="Filter to YYYY-MM")
+    p_stats_summary.set_defaults(func=cmd_stats_summary)
+
+    # stats category
+    p_stats_cat = subparsers.add_parser("stats-category", help="Total for a category (inc. children)")
+    p_stats_cat.add_argument("name", help="Category name")
+    p_stats_cat.add_argument("--month", help="Filter to YYYY-MM")
+    p_stats_cat.add_argument("--from", dest="from_date", type=lambda s: __import__('datetime').date.fromisoformat(s), help="Start date (YYYY-MM-DD)")
+    p_stats_cat.add_argument("--to", dest="to_date", type=lambda s: __import__('datetime').date.fromisoformat(s), help="End date (YYYY-MM-DD)")
+    p_stats_cat.set_defaults(func=cmd_stats_category)
+
+    # stats trend
+    p_stats_trend = subparsers.add_parser("stats-trend", help="Monthly breakdown for a category")
+    p_stats_trend.add_argument("name", help="Category name")
+    p_stats_trend.add_argument("--from", dest="from_date", type=lambda s: __import__('datetime').date.fromisoformat(s), help="Start date (YYYY-MM-DD)")
+    p_stats_trend.add_argument("--to", dest="to_date", type=lambda s: __import__('datetime').date.fromisoformat(s), help="End date (YYYY-MM-DD)")
+    p_stats_trend.set_defaults(func=cmd_stats_trend)
+
+    # stats top
+    p_stats_top = subparsers.add_parser("stats-top", help="Top spending categories")
+    p_stats_top.add_argument("--month", help="Filter to YYYY-MM")
+    p_stats_top.add_argument("--limit", type=int, default=10, help="Max categories (default: 10)")
+    p_stats_top.set_defaults(func=cmd_stats_top)
+
+    # recalculate
+    p_recalc = subparsers.add_parser("recalculate", help="Recalculate adjusted_amount for all transactions")
+    p_recalc.set_defaults(func=cmd_recalculate)
+
+    # link
+    p_link = subparsers.add_parser("link", help="Link two transactions")
+    p_link.add_argument("from_id", type=int, help="From transaction ID")
+    p_link.add_argument("to_id", type=int, nargs="?", default=None, help="To transaction ID (not needed for external_transfer)")
+    p_link.add_argument("--type", required=True, choices=["internal_transfer", "external_transfer", "reimbursement"], help="Link type")
+    p_link.add_argument("--ratio", type=float, default=1.0, help="Ratio (default: 1.0)")
+    p_link.add_argument("--comment", help="Comment")
+    p_link.set_defaults(func=cmd_link)
+
+    # unlink
+    p_unlink = subparsers.add_parser("unlink", help="Remove a transaction link")
+    p_unlink.add_argument("id", type=int, help="Link ID")
+    p_unlink.set_defaults(func=cmd_unlink)
+
+    # links
+    p_links = subparsers.add_parser("links", help="List transaction links")
+    p_links.add_argument("--type", choices=["internal_transfer", "external_transfer", "reimbursement"], help="Filter by type")
+    p_links.set_defaults(func=cmd_links)
 
     args = parser.parse_args()
     if not args.command:
