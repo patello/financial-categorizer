@@ -1,6 +1,6 @@
 """Stats module: SQL views and query functions for financial-categorizer.
 
-Creates views optimized for Grafana and CLI consumption.
+Creates views for dashboard and CLI consumption.
 All views use adjusted_amount directly — ownership_ratio, transfers,
 and reimbursements are already baked in.
 """
