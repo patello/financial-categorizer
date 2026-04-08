@@ -159,6 +159,18 @@ class DatabaseHandler:
             )""")
 
         cur.execute("""
+            CREATE TABLE IF NOT EXISTS transaction_links(
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                from_transaction_id INTEGER NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+                to_transaction_id   INTEGER REFERENCES transactions(id) ON DELETE CASCADE,
+                link_type           TEXT NOT NULL CHECK(link_type IN ('internal_transfer','external_transfer','reimbursement')),
+                ratio               REAL NOT NULL DEFAULT 1.0
+                                    CHECK(ratio > 0 AND ratio <= 1.0),
+                created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                comment             TEXT
+            )""")
+
+        cur.execute("""
             CREATE TABLE IF NOT EXISTS metadata(
                 key   TEXT PRIMARY KEY,
                 value TEXT
@@ -325,18 +337,65 @@ class DatabaseHandler:
     def recalculate_adjusted_amounts(self) -> int:
         """Recalculate adjusted_amount for all transactions.
 
-        adjusted_amount = amount * account.ownership_ratio
-        (Links will be layered on top in step 3.)
-
-        Returns the number of rows updated.
+        Step 1: base = amount * account.ownership_ratio
+        Step 2: apply link adjustments:
+          - internal_transfer: from side gets +from.amount*ratio,
+                               to side gets -to.amount*ratio
+          - external_transfer: adjusted_amount = 0
+          - reimbursement: from side gets -from.amount*ratio
         """
         cur = self.get_cursor()
+
+        # Step 1: base = amount * ownership_ratio
         cur.execute(
             "UPDATE transactions SET adjusted_amount = amount * "
             "(SELECT ownership_ratio FROM accounts WHERE accounts.id = transactions.account_id)"
         )
+        total_updated = cur.rowcount
+
+        # Step 2: apply link adjustments in Python (handles multiple links per txn)
+        cur.execute(
+            "SELECT from_transaction_id, to_transaction_id, link_type, ratio "
+            "FROM transaction_links"
+        )
+        links = cur.fetchall()
+
+        # Build per-transaction adjustments
+        adjustments: dict[int, float] = {}  # txn_id -> delta to apply
+
+        for from_id, to_id, link_type, ratio in links:
+            if link_type == "external_transfer":
+                adjustments[from_id] = "ZERO"  # marker to set to 0
+            elif link_type == "internal_transfer":
+                # Neutralize both sides toward 0 based on their adjusted_amount
+                cur.execute("SELECT adjusted_amount FROM transactions WHERE id = ?", (from_id,))
+                from_adj = cur.fetchone()[0]
+                # from side: subtract its own adjusted_amount * ratio
+                adjustments[from_id] = adjustments.get(from_id, 0) - from_adj * ratio
+                if to_id is not None:
+                    cur.execute("SELECT adjusted_amount FROM transactions WHERE id = ?", (to_id,))
+                    to_adj = cur.fetchone()[0]
+                    adjustments[to_id] = adjustments.get(to_id, 0) - to_adj * ratio
+            elif link_type == "reimbursement":
+                # from side: subtract its adjusted_amount * ratio
+                cur.execute("SELECT adjusted_amount FROM transactions WHERE id = ?", (from_id,))
+                from_adj = cur.fetchone()[0]
+                adjustments[from_id] = adjustments.get(from_id, 0) - from_adj * ratio
+
+        # Apply adjustments
+        for txn_id, delta in adjustments.items():
+            if delta == "ZERO":
+                cur.execute(
+                    "UPDATE transactions SET adjusted_amount = 0 WHERE id = ?", (txn_id,)
+                )
+            else:
+                cur.execute(
+                    "UPDATE transactions SET adjusted_amount = adjusted_amount + ? WHERE id = ?",
+                    (delta, txn_id),
+                )
+
         self.commit()
-        return cur.rowcount
+        return total_updated
 
     def delete_account(self, account_id: int) -> bool:
         """Delete an account. Fails if transactions reference it (ON DELETE RESTRICT).
@@ -358,3 +417,175 @@ class DatabaseHandler:
         if existing:
             return existing["id"]
         return self.add_account(name, **kwargs)
+
+
+# ------------------------------------------------------------------ #
+#  Transfer Manager
+# ------------------------------------------------------------------ #
+
+VALID_LINK_TYPES = ("internal_transfer", "external_transfer", "reimbursement")
+
+
+class TransferManager:
+    """Manages transaction links (transfers, reimbursements).
+
+    Links connect transactions to adjust their adjusted_amount:
+    - internal_transfer: between own accounts (neutralize both sides)
+    - external_transfer: outgoing to non-tracked account (set to 0)
+    - reimbursement: partial/full refund of an expense
+    """
+
+    def __init__(self, db_handler: DatabaseHandler):
+        self.db = db_handler
+
+    def link_transactions(
+        self,
+        from_transaction_id: int,
+        to_transaction_id: int | None,
+        link_type: str,
+        ratio: float = 1.0,
+        comment: str | None = None,
+    ) -> int:
+        """Create a link between two transactions. Returns the link id."""
+        if link_type not in VALID_LINK_TYPES:
+            raise ValueError(f"Invalid link_type. Must be one of {VALID_LINK_TYPES}")
+        if link_type == "internal_transfer" and to_transaction_id is None:
+            raise ValueError("to_transaction_id is required for internal_transfer")
+        if link_type == "external_transfer" and to_transaction_id is not None:
+            raise ValueError("external_transfer does not take a to_transaction_id")
+
+        cur = self.db.get_cursor()
+        # Verify transactions exist
+        cur.execute("SELECT id FROM transactions WHERE id = ?", (from_transaction_id,))
+        if not cur.fetchone():
+            raise ValueError(f"from_transaction_id {from_transaction_id} not found")
+        if to_transaction_id is not None:
+            cur.execute("SELECT id FROM transactions WHERE id = ?", (to_transaction_id,))
+            if not cur.fetchone():
+                raise ValueError(f"to_transaction_id {to_transaction_id} not found")
+
+        cur.execute(
+            "INSERT INTO transaction_links (from_transaction_id, to_transaction_id, link_type, ratio, comment) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (from_transaction_id, to_transaction_id, link_type, ratio, comment),
+        )
+        self.db.commit()
+        link_id = cur.lastrowid
+
+        self.db.recalculate_adjusted_amounts()
+        return link_id
+
+    def unlink(self, link_id: int) -> bool:
+        """Remove a link. Returns True if it existed."""
+        cur = self.db.get_cursor()
+        cur.execute("DELETE FROM transaction_links WHERE id = ?", (link_id,))
+        self.db.commit()
+        removed = cur.rowcount > 0
+        if removed:
+            self.db.recalculate_adjusted_amounts()
+        return removed
+
+    def get_links(self, transaction_id: int) -> list[dict]:
+        """Get all links involving a transaction."""
+        cur = self.db.get_cursor()
+        cur.execute(
+            "SELECT id, from_transaction_id, to_transaction_id, link_type, ratio, created_at, comment "
+            "FROM transaction_links "
+            "WHERE from_transaction_id = ? OR to_transaction_id = ?",
+            (transaction_id, transaction_id),
+        )
+        return [
+            {
+                "id": row[0],
+                "from_transaction_id": row[1],
+                "to_transaction_id": row[2],
+                "link_type": row[3],
+                "ratio": row[4],
+                "created_at": row[5],
+                "comment": row[6],
+            }
+            for row in cur.fetchall()
+        ]
+
+    def list_links(
+        self,
+        date_from: date | None = None,
+        date_to: date | None = None,
+        link_type: str | None = None,
+    ) -> list[dict]:
+        """List links, optionally filtered by date range and type."""
+        cur = self.db.get_cursor()
+        conditions = []
+        params = []
+
+        if link_type is not None:
+            conditions.append("tl.link_type = ?")
+            params.append(link_type)
+        if date_from is not None:
+            conditions.append("t.date >= ?")
+            params.append(date_from)
+        if date_to is not None:
+            conditions.append("t.date <= ?")
+            params.append(date_to)
+
+        where = ""
+        if conditions:
+            where = "WHERE " + " AND ".join(conditions)
+
+        cur.execute(
+            f"SELECT tl.id, tl.from_transaction_id, tl.to_transaction_id, "
+            f"tl.link_type, tl.ratio, tl.created_at, tl.comment "
+            f"FROM transaction_links tl "
+            f"JOIN transactions t ON t.id = tl.from_transaction_id "
+            f"{where} ORDER BY tl.created_at",
+            params,
+        )
+        return [
+            {
+                "id": row[0],
+                "from_transaction_id": row[1],
+                "to_transaction_id": row[2],
+                "link_type": row[3],
+                "ratio": row[4],
+                "created_at": row[5],
+                "comment": row[6],
+            }
+            for row in cur.fetchall()
+        ]
+
+    # Convenience methods
+
+    def mark_transfer(
+        self,
+        from_transaction_id: int,
+        to_transaction_id: int,
+        ratio: float = 1.0,
+        comment: str | None = None,
+    ) -> int:
+        """Link two transactions as an internal transfer."""
+        return self.link_transactions(
+            from_transaction_id, to_transaction_id, "internal_transfer", ratio, comment
+        )
+
+    def mark_external(
+        self,
+        transaction_id: int,
+        ratio: float = 1.0,
+        comment: str | None = None,
+    ) -> int:
+        """Mark a transaction as an external transfer."""
+        return self.link_transactions(
+            transaction_id, None, "external_transfer", ratio, comment
+        )
+
+    def mark_reimbursement(
+        self,
+        reimbursement_transaction_id: int,
+        original_transaction_id: int,
+        ratio: float = 1.0,
+        comment: str | None = None,
+    ) -> int:
+        """Link a reimbursement to the original expense."""
+        return self.link_transactions(
+            reimbursement_transaction_id, original_transaction_id, "reimbursement", ratio, comment
+        )
