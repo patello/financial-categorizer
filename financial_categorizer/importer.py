@@ -1,12 +1,16 @@
 """CSV importer for financial-categorizer.
 
 Auto-detects bank CSV format (Nordea, ICA) and imports transactions
-into the SQLite database with deduplication.
+into the SQLite database with deduplication. Handles pending transactions
+("Reserverat" in Nordea) by updating them when the settled version appears.
 """
 
 import csv
 import datetime
 import os
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 # Known CSV formats. Detection uses a unique header combo per format.
@@ -91,6 +95,7 @@ class CSVImporter:
         imported = 0
         skipped = 0
         errors = 0
+        settled_pending = 0
 
         with open(file_path, newline="", encoding="utf-8-sig") as f:
             reader = csv.reader(f, delimiter=";")
@@ -114,18 +119,44 @@ class CSVImporter:
                     continue
 
                 try:
-                    txn_date = parse_date(row[date_idx])
+                    raw_date = row[date_idx].strip()
+                    is_pending = raw_date.lower() == "reserverat"
+                    if is_pending:
+                        txn_date = datetime.date.today()
+                    else:
+                        txn_date = parse_date(raw_date)
                     amount = parse_amount(row[amount_idx])
                     description = row[desc_idx].strip()
                 except (ValueError, IndexError) as e:
                     errors += 1
                     continue
 
+                status = "pending" if is_pending else "settled"
+
+                # For settled transactions, check if a pending one exists
+                # with the same description and account. If so, update it.
+                if status == "settled":
+                    cur.execute(
+                        "SELECT id FROM transactions "
+                        "WHERE description = ? AND account = ? AND status = 'pending'",
+                        (description, account_name),
+                    )
+                    pending_row = cur.fetchone()
+                    if pending_row:
+                        cur.execute(
+                            "UPDATE transactions SET date = ?, amount = ?, "
+                            "status = 'settled', source_file = ? WHERE id = ?",
+                            (txn_date, amount, file_path, pending_row[0]),
+                        )
+                        settled_pending += 1
+                        imported += 1
+                        continue
+
                 try:
                     cur.execute(
-                        "INSERT INTO transactions (date, description, amount, account, source_file) "
-                        "VALUES (?, ?, ?, ?, ?)",
-                        (txn_date, description, amount, account_name, file_path),
+                        "INSERT INTO transactions (date, description, amount, account, source_file, status) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (txn_date, description, amount, account_name, file_path, status),
                     )
                     imported += 1
                 except Exception:
@@ -133,4 +164,9 @@ class CSVImporter:
 
             self.db.commit()
 
-        return {"imported": imported, "skipped": skipped, "errors": errors}
+        return {
+            "imported": imported,
+            "skipped": skipped,
+            "errors": errors,
+            "settled_pending": settled_pending,
+        }

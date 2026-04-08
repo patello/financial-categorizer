@@ -118,7 +118,9 @@ class DatabaseHandler:
                 imported_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
                 comment     TEXT,
-                UNIQUE(date, description, amount, account)
+                status      TEXT NOT NULL DEFAULT 'settled'
+                            CHECK(status IN ('pending','settled')),
+                UNIQUE(date, description, amount, account, status)
             )""")
 
         cur.execute("""

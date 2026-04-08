@@ -196,3 +196,91 @@ class TestAccountName:
             assert cur.fetchone()[0] == "my_checking"
         finally:
             os.unlink(path)
+
+
+PENDING_NORDEA_CSV = (
+    "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
+    "Reserverat;-500,00;1111 11 11111;;;A1;999,99;SEK\n"
+    "2024-01-02;1000,00;;1111 11 11111;;SWISH FRÅN Namn;999,99;SEK\n"
+)
+
+SETTLED_NORDEA_CSV = (
+    "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
+    "2024-01-04;-480,00;1111 11 11111;;;A1;999,99;SEK\n"
+    "2024-01-02;1000,00;;1111 11 11111;;SWISH FRÅN Namn;999,99;SEK\n"
+)
+
+
+class TestPendingTransactions:
+    def test_pending_imported_with_today_date(self, importer, db):
+        path = _write_csv(PENDING_NORDEA_CSV)
+        try:
+            result = importer.import_file(path, account_name="test")
+            assert result["imported"] == 2
+
+            cur = db.get_cursor()
+            cur.execute(
+                "SELECT date, status FROM transactions WHERE description = 'A1'"
+            )
+            row = cur.fetchone()
+            assert row[0] == date.today()
+            assert row[1] == "pending"
+        finally:
+            os.unlink(path)
+
+    def test_settled_updates_pending(self, importer, db):
+        """A settled transaction with same description+account updates the pending one."""
+        pending_path = _write_csv(PENDING_NORDEA_CSV)
+        settled_path = _write_csv(SETTLED_NORDEA_CSV)
+        try:
+            importer.import_file(pending_path, account_name="test")
+
+            cur = db.get_cursor()
+            cur.execute("SELECT COUNT(*) FROM transactions WHERE status = 'pending'")
+            assert cur.fetchone()[0] == 1
+
+            result = importer.import_file(settled_path, account_name="test")
+            assert result["settled_pending"] == 1
+            assert result["imported"] == 1  # 1 settled pending update, SWISH was duplicate
+
+            cur = db.get_cursor()
+            cur.execute(
+                "SELECT date, amount, status FROM transactions "
+                "WHERE description = 'A1'"
+            )
+            row = cur.fetchone()
+            assert row[0] == date(2024, 1, 4)
+            assert row[1] == -480.0
+            assert row[2] == "settled"
+
+            # No more pending rows
+            cur.execute("SELECT COUNT(*) FROM transactions WHERE status = 'pending'")
+            assert cur.fetchone()[0] == 0
+        finally:
+            os.unlink(pending_path)
+            os.unlink(settled_path)
+
+    def test_pending_no_match_different_account(self, importer, db):
+        """Pending on one account doesn't match settled on another."""
+        pending_path = _write_csv(PENDING_NORDEA_CSV)
+        settled_path = _write_csv(SETTLED_NORDEA_CSV)
+        try:
+            importer.import_file(pending_path, account_name="account_a")
+            result = importer.import_file(settled_path, account_name="account_b")
+
+            assert result["settled_pending"] == 0
+
+            cur = db.get_cursor()
+            cur.execute("SELECT COUNT(*) FROM transactions")
+            assert cur.fetchone()[0] == 4  # 2 + 2, no merge
+        finally:
+            os.unlink(pending_path)
+            os.unlink(settled_path)
+
+    def test_result_includes_settled_pending_count(self, importer, db):
+        path = _write_csv(NORDEA_CSV)
+        try:
+            result = importer.import_file(path, account_name="test")
+            assert result["settled_pending"] == 0
+        finally:
+            os.unlink(path)
