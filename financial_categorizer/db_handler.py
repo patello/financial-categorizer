@@ -133,6 +133,7 @@ class DatabaseHandler:
                 status      TEXT NOT NULL DEFAULT 'settled'
                             CHECK(status IN ('pending','settled')),
                 matched_rule_id INTEGER REFERENCES match_rules(id) ON DELETE SET NULL,
+                adjusted_amount REAL,
                 UNIQUE(date, description, amount, account_id, status)
             )""")
 
@@ -291,8 +292,11 @@ class DatabaseHandler:
             updates.append("type = ?")
             params.append(type)
         if ownership_ratio is not None:
+            old = self.get_account(account_id)
             updates.append("ownership_ratio = ?")
             params.append(ownership_ratio)
+        else:
+            old = None
         if currency is not None:
             updates.append("currency = ?")
             params.append(currency)
@@ -310,7 +314,40 @@ class DatabaseHandler:
             params,
         )
         self.commit()
-        return cur.rowcount > 0
+        changed = cur.rowcount > 0
+
+        # If ownership_ratio changed, recalc adjusted_amount for this account's transactions
+        if changed and old and old["ownership_ratio"] != ownership_ratio:
+            self.recalculate_adjusted_amounts(account_id)
+
+        return changed
+
+    def recalculate_adjusted_amounts(self, account_id: int | None = None) -> int:
+        """Recalculate adjusted_amount for transactions.
+
+        If account_id is given, only recalc transactions on that account.
+        Otherwise recalc all transactions.
+
+        adjusted_amount = amount * account.ownership_ratio
+        (Links will be layered on top in step 3.)
+
+        Returns the number of rows updated.
+        """
+        cur = self.get_cursor()
+        if account_id is not None:
+            cur.execute(
+                "UPDATE transactions SET adjusted_amount = amount * "
+                "(SELECT ownership_ratio FROM accounts WHERE accounts.id = transactions.account_id) "
+                "WHERE account_id = ?",
+                (account_id,),
+            )
+        else:
+            cur.execute(
+                "UPDATE transactions SET adjusted_amount = amount * "
+                "(SELECT ownership_ratio FROM accounts WHERE accounts.id = transactions.account_id)"
+            )
+        self.commit()
+        return cur.rowcount
 
     def delete_account(self, account_id: int) -> bool:
         """Delete an account. Fails if transactions reference it (ON DELETE RESTRICT).

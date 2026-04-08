@@ -154,8 +154,10 @@ class CSVImporter:
                     if pending_row:
                         cur.execute(
                             "UPDATE transactions SET date = ?, amount = ?, "
+                            "adjusted_amount = ? * "
+                            "(SELECT ownership_ratio FROM accounts WHERE accounts.id = account_id), "
                             "status = 'settled', source_file = ? WHERE id = ?",
-                            (txn_date, amount, file_path, pending_row[0]),
+                            (txn_date, amount, amount, file_path, pending_row[0]),
                         )
                         settled_pending += 1
                         imported += 1
@@ -163,9 +165,10 @@ class CSVImporter:
 
                 try:
                     cur.execute(
-                        "INSERT INTO transactions (date, description, amount, account_id, source_file, status) "
-                        "VALUES (?, ?, ?, ?, ?, ?)",
-                        (txn_date, description, amount, account_id, file_path, status),
+                        "INSERT INTO transactions (date, description, amount, account_id, source_file, status, adjusted_amount) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ? * "
+                        "(SELECT ownership_ratio FROM accounts WHERE accounts.id = ?))",
+                        (txn_date, description, amount, account_id, file_path, status, amount, account_id),
                     )
                     imported += 1
                 except Exception:
