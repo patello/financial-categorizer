@@ -111,14 +111,10 @@ class TestReimbursement:
         t_expense = _add_txn(db, datetime.date(2026, 1, 1), "Dinner", -500.0, a1, adjusted_amount=-500.0)
         t_reimb = _add_txn(db, datetime.date(2026, 1, 5), "Reimb dinner", 300.0, a1, adjusted_amount=300.0)
 
-        # Reimbursement: the reimb txn (from) reduces by its amount * ratio
-        # from side (reimb): 300 - 300*1.0 = 0
-        # The original expense is the "to" side
         tm.mark_reimbursement(t_reimb, t_expense)
 
         assert _get_adjusted(db, t_reimb) == pytest.approx(0.0)
-        # original expense unchanged (reimbursement only affects the from side)
-        assert _get_adjusted(db, t_expense) == pytest.approx(-500.0)
+        assert _get_adjusted(db, t_expense) == pytest.approx(0.0)
 
     def test_partial_reimbursement(self, db, tm):
         a1 = db.add_account("Checking")

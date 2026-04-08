@@ -339,10 +339,9 @@ class DatabaseHandler:
 
         Step 1: base = amount * account.ownership_ratio
         Step 2: apply link adjustments:
-          - internal_transfer: from side gets +from.amount*ratio,
-                               to side gets -to.amount*ratio
-          - external_transfer: adjusted_amount = 0
-          - reimbursement: from side gets -from.amount*ratio
+          - external_transfer (no to_id): adjusted_amount = 0
+          - everything else (internal_transfer, reimbursement):
+            neutralize both sides toward 0, scaled by ratio
         """
         cur = self.get_cursor()
 
@@ -366,21 +365,15 @@ class DatabaseHandler:
         for from_id, to_id, link_type, ratio in links:
             if link_type == "external_transfer":
                 adjustments[from_id] = "ZERO"  # marker to set to 0
-            elif link_type == "internal_transfer":
-                # Neutralize both sides toward 0 based on their adjusted_amount
+            else:
+                # internal_transfer / reimbursement: neutralize both sides toward 0
                 cur.execute("SELECT adjusted_amount FROM transactions WHERE id = ?", (from_id,))
                 from_adj = cur.fetchone()[0]
-                # from side: subtract its own adjusted_amount * ratio
                 adjustments[from_id] = adjustments.get(from_id, 0) - from_adj * ratio
                 if to_id is not None:
                     cur.execute("SELECT adjusted_amount FROM transactions WHERE id = ?", (to_id,))
                     to_adj = cur.fetchone()[0]
                     adjustments[to_id] = adjustments.get(to_id, 0) - to_adj * ratio
-            elif link_type == "reimbursement":
-                # from side: subtract its adjusted_amount * ratio
-                cur.execute("SELECT adjusted_amount FROM transactions WHERE id = ?", (from_id,))
-                from_adj = cur.fetchone()[0]
-                adjustments[from_id] = adjustments.get(from_id, 0) - from_adj * ratio
 
         # Apply adjustments
         for txn_id, delta in adjustments.items():
