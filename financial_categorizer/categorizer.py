@@ -347,6 +347,51 @@ class Categorizer:
             for row in cur.fetchall()
         ]
 
+    def get_category(self, category_id: int) -> dict | None:
+        """Look up a single category by ID."""
+        cur = self.db.get_cursor()
+        cur.execute(
+            "SELECT id, name, parent_id, description FROM categories WHERE id = ?",
+            (category_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {"id": row[0], "name": row[1], "parent_id": row[2], "description": row[3]}
+
+    def get_parent(self, category_id: int) -> dict | None:
+        """Return the parent category, or None if root."""
+        cat = self.get_category(category_id)
+        if not cat or cat["parent_id"] is None:
+            return None
+        return self.get_category(cat["parent_id"])
+
+    def get_subtree(self, category_id: int) -> list[dict]:
+        """Return all descendants of a category (flat list with depth).
+
+        Returns list of dicts with 'id', 'name', 'parent_id', 'description', 'depth'.
+        Depth 0 = direct children, 1 = grandchildren, etc.
+        Does NOT include the category itself.
+        """
+        result = []
+        cur = self.db.get_cursor()
+
+        def _recurse(pid, depth):
+            cur.execute(
+                "SELECT id, name, parent_id, description FROM categories WHERE parent_id = ?",
+                (pid,),
+            )
+            for row in cur.fetchall():
+                result.append({
+                    "id": row[0], "name": row[1],
+                    "parent_id": row[2], "description": row[3],
+                    "depth": depth,
+                })
+                _recurse(row[0], depth + 1)
+
+        _recurse(category_id, 0)
+        return result
+
     def get_children(self, category_id: int) -> list[dict]:
         """Return direct children of a category."""
         cur = self.db.get_cursor()

@@ -407,3 +407,64 @@ class TestDeleteCategory:
         cur = db.get_cursor()
         cur.execute("SELECT category_id FROM transactions WHERE id = ?", (txn_id,))
         assert cur.fetchone()[0] is None
+
+
+class TestCategoryHelpers:
+    """Tests for get_category, get_parent, get_subtree."""
+
+    @pytest.fixture(autouse=True)
+    def setup_tree(self, cat):
+        """Build: Food -> Groceries, Dining -> Restaurants, Cafes."""
+        self.food = cat.add_category("Food")
+        self.groceries = cat.add_category("Groceries", parent_id=self.food)
+        self.dining = cat.add_category("Dining", parent_id=self.food)
+        self.restaurants = cat.add_category("Restaurants", parent_id=self.dining)
+        self.cafes = cat.add_category("Cafes", parent_id=self.dining)
+
+    def test_get_category(self, cat):
+        c = cat.get_category(self.food)
+        assert c["name"] == "Food"
+        assert c["parent_id"] is None
+
+    def test_get_category_not_found(self, cat):
+        assert cat.get_category(999) is None
+
+    def test_get_parent_of_child(self, cat):
+        p = cat.get_parent(self.groceries)
+        assert p["id"] == self.food
+
+    def test_get_parent_of_grandchild(self, cat):
+        p = cat.get_parent(self.restaurants)
+        assert p["id"] == self.dining
+
+    def test_get_parent_of_root(self, cat):
+        assert cat.get_parent(self.food) is None
+
+    def test_get_parent_of_nonexistent(self, cat):
+        assert cat.get_parent(999) is None
+
+    def test_get_subtree_food(self, cat):
+        subtree = cat.get_subtree(self.food)
+        names = {s["name"] for s in subtree}
+        assert names == {"Groceries", "Dining", "Restaurants", "Cafes"}
+
+    def test_get_subtree_depth(self, cat):
+        subtree = cat.get_subtree(self.food)
+        by_name = {s["name"]: s for s in subtree}
+        assert by_name["Groceries"]["depth"] == 0
+        assert by_name["Dining"]["depth"] == 0
+        assert by_name["Restaurants"]["depth"] == 1
+        assert by_name["Cafes"]["depth"] == 1
+
+    def test_get_subtree_leaf(self, cat):
+        subtree = cat.get_subtree(self.cafes)
+        assert subtree == []
+
+    def test_get_subtree_nonexistent(self, cat):
+        subtree = cat.get_subtree(999)
+        assert subtree == []
+
+    def test_get_subtree_dining(self, cat):
+        subtree = cat.get_subtree(self.dining)
+        names = {s["name"] for s in subtree}
+        assert names == {"Restaurants", "Cafes"}
