@@ -120,6 +120,7 @@ class DatabaseHandler:
                 comment     TEXT,
                 status      TEXT NOT NULL DEFAULT 'settled'
                             CHECK(status IN ('pending','settled')),
+                matched_rule_id INTEGER REFERENCES match_rules(id) ON DELETE SET NULL,
                 UNIQUE(date, description, amount, account, status)
             )""")
 

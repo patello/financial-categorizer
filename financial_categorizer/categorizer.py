@@ -35,26 +35,25 @@ class Categorizer:
         """Categorize a single transaction.
 
         Checks id_matches (manual override) first, then match_rules by priority.
-        Updates the transaction's category_id in the database.
+        Updates the transaction's category_id and matched_rule_id.
 
         Returns the matched category_id, or None if no match.
         """
         cur = self.db.get_cursor()
 
-        # 1. Check manual override
+        # 1. Check manual override — always wins, clears rule tracking
         cur.execute(
             "SELECT category_id FROM id_matches WHERE transaction_id = ?",
             (transaction_id,),
         )
         row = cur.fetchone()
         if row:
-            category_id = row[0]
             cur.execute(
-                "UPDATE transactions SET category_id = ? WHERE id = ?",
-                (category_id, transaction_id),
+                "UPDATE transactions SET category_id = ?, matched_rule_id = NULL WHERE id = ?",
+                (row[0], transaction_id),
             )
             self.db.commit()
-            return category_id
+            return row[0]
 
         # 2. Get the transaction description
         cur.execute(
@@ -74,16 +73,24 @@ class Categorizer:
         for rule_id, category_id, pattern, match_type in cur.fetchall():
             if self._match_description(pattern, match_type, description):
                 cur.execute(
-                    "UPDATE transactions SET category_id = ? WHERE id = ?",
-                    (category_id, transaction_id),
+                    "UPDATE transactions SET category_id = ?, matched_rule_id = ? WHERE id = ?",
+                    (category_id, rule_id, transaction_id),
                 )
                 self.db.commit()
                 return category_id
 
+        # No match — clear any previous rule-based assignment
+        cur.execute(
+            "UPDATE transactions SET category_id = NULL, matched_rule_id = NULL WHERE id = ?",
+            (transaction_id,),
+        )
+        self.db.commit()
         return None
 
-    def categorize_all(self) -> dict:
-        """Categorize all uncategorized transactions.
+    def categorize_new(self) -> dict:
+        """Categorize only uncategorized transactions (category_id IS NULL).
+
+        Skips transactions that already have a category (rule or manual).
 
         Returns a dict with counts: {'matched': int, 'unmatched': int}
         """
@@ -100,6 +107,36 @@ class Categorizer:
                 matched += 1
 
         return {"matched": matched, "unmatched": len(uncategorized) - matched}
+
+    def categorize_all(self) -> dict:
+        """Re-categorize ALL transactions using current rules.
+
+        Resets rule-based matches (matched_rule_id IS NOT NULL) first,
+        then re-runs rules on every transaction. Manual overrides
+        (id_matches) are preserved and always win.
+
+        Returns a dict with counts: {'matched': int, 'unmatched': int}
+        """
+        cur = self.db.get_cursor()
+
+        # Clear all rule-based category assignments
+        cur.execute(
+            "UPDATE transactions SET category_id = NULL, matched_rule_id = NULL "
+            "WHERE id NOT IN (SELECT transaction_id FROM id_matches)"
+        )
+        self.db.commit()
+
+        # Now categorize everything
+        cur.execute("SELECT id FROM transactions")
+        all_ids = [row[0] for row in cur.fetchall()]
+
+        matched = 0
+        for txn_id in all_ids:
+            result = self.categorize(txn_id)
+            if result is not None:
+                matched += 1
+
+        return {"matched": matched, "unmatched": len(all_ids) - matched}
 
     # ------------------------------------------------------------------ #
     #  Category hierarchy
@@ -204,9 +241,9 @@ class Categorizer:
             "INSERT OR REPLACE INTO id_matches (transaction_id, category_id) VALUES (?, ?)",
             (transaction_id, category_id),
         )
-        # Also update the transaction's category_id
+        # Also update the transaction's category_id and clear rule tracking
         cur.execute(
-            "UPDATE transactions SET category_id = ? WHERE id = ?",
+            "UPDATE transactions SET category_id = ?, matched_rule_id = NULL WHERE id = ?",
             (category_id, transaction_id),
         )
         self.db.commit()

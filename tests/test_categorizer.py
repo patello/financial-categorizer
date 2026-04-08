@@ -142,6 +142,88 @@ class TestCategorizeAll:
         assert result["unmatched"] == 1
 
 
+class TestCategorizeNew:
+    def test_only_uncategorized(self, db, cat):
+        food_id = _add_cat(cat, "Food")
+        cat.add_rule(food_id, "ICA", match_type="regex")
+
+        txn1 = _add_txn(db, "ICA Store")
+        cat.categorize(txn1)  # already categorized
+        txn2 = _add_txn(db, "ICA Store 2", dt=date(2024, 1, 16))
+        _add_txn(db, "Unknown thing", dt=date(2024, 1, 17))
+
+        result = cat.categorize_new()
+        assert result["matched"] == 1  # only txn2
+        assert result["unmatched"] == 1
+
+
+class TestRecategorize:
+    def test_categorize_all_reruns_rules(self, db, cat):
+        """categorize_all() picks up new rules for previously matched transactions."""
+        general_id = _add_cat(cat, "General")
+        food_id = _add_cat(cat, "Food")
+
+        cat.add_rule(general_id, "ICA", match_type="regex")
+        txn_id = _add_txn(db, "ICA Store")
+        cat.categorize(txn_id)
+
+        # Verify initial category
+        cur = db.get_cursor()
+        cur.execute("SELECT category_id FROM transactions WHERE id = ?", (txn_id,))
+        assert cur.fetchone()[0] == general_id
+
+        # Add a higher-priority rule
+        cat.add_rule(food_id, "ICA", match_type="regex", priority=10)
+        result = cat.categorize_all()
+
+        assert result["matched"] == 1
+        cur.execute("SELECT category_id FROM transactions WHERE id = ?", (txn_id,))
+        assert cur.fetchone()[0] == food_id
+
+    def test_categorize_all_preserves_manual_overrides(self, db, cat):
+        """categorize_all() never overwrites manual matches."""
+        food_id = _add_cat(cat, "Food")
+        transport_id = _add_cat(cat, "Transport")
+
+        cat.add_rule(transport_id, "ICA", match_type="regex")
+        txn_id = _add_txn(db, "ICA Store")
+        cat.add_manual_match(txn_id, food_id)
+
+        cat.categorize_all()
+
+        cur = db.get_cursor()
+        cur.execute("SELECT category_id FROM transactions WHERE id = ?", (txn_id,))
+        assert cur.fetchone()[0] == food_id  # manual override preserved
+
+    def test_categorize_all_tracks_rule_id(self, db, cat):
+        """Rule-based matches get matched_rule_id set."""
+        food_id = _add_cat(cat, "Food")
+        rule_id = cat.add_rule(food_id, "ICA", match_type="regex")
+        txn_id = _add_txn(db, "ICA Store")
+
+        cat.categorize(txn_id)
+
+        cur = db.get_cursor()
+        cur.execute("SELECT matched_rule_id FROM transactions WHERE id = ?", (txn_id,))
+        assert cur.fetchone()[0] == rule_id
+
+    def test_manual_match_clears_rule_id(self, db, cat):
+        """Manual override sets matched_rule_id to NULL."""
+        food_id = _add_cat(cat, "Food")
+        transport_id = _add_cat(cat, "Transport")
+        cat.add_rule(transport_id, "ICA", match_type="regex")
+        txn_id = _add_txn(db, "ICA Store")
+
+        cat.categorize(txn_id)  # rule-based
+        cat.add_manual_match(txn_id, food_id)  # manual override
+
+        cur = db.get_cursor()
+        cur.execute("SELECT matched_rule_id, category_id FROM transactions WHERE id = ?", (txn_id,))
+        row = cur.fetchone()
+        assert row[0] is None  # no rule tracked
+        assert row[1] == food_id
+
+
 class TestPreviewRule:
     def test_preview(self, db, cat):
         _add_txn(db, "ICA Store 1")
