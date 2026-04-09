@@ -55,29 +55,36 @@ class Categorizer:
             self.db.commit()
             return row[0]
 
-        # 2. Get the transaction description
+        # 2. Get the transaction description and amount
         cur.execute(
-            "SELECT description FROM transactions WHERE id = ?",
+            "SELECT description, amount FROM transactions WHERE id = ?",
             (transaction_id,),
         )
         row = cur.fetchone()
         if not row:
             return None
-        description = row[0]
+        description, amount = row[0], row[1]
 
         # 3. Apply match rules in priority order (highest priority first)
         cur.execute(
-            "SELECT id, category_id, pattern, match_type FROM match_rules "
+            "SELECT id, category_id, pattern, match_type, amount_min, amount_max FROM match_rules "
             "WHERE enabled = 1 ORDER BY priority DESC, id ASC"
         )
-        for rule_id, category_id, pattern, match_type in cur.fetchall():
-            if self._match_description(pattern, match_type, description):
-                cur.execute(
-                    "UPDATE transactions SET category_id = ?, matched_rule_id = ? WHERE id = ?",
-                    (category_id, rule_id, transaction_id),
-                )
-                self.db.commit()
-                return category_id
+        for rule_id, category_id, pattern, match_type, amount_min, amount_max in cur.fetchall():
+            if not self._match_description(pattern, match_type, description):
+                continue
+            # Check amount constraints
+            if amount_min is not None and amount < amount_min:
+                continue
+            if amount_max is not None and amount > amount_max:
+                continue
+            # Match found
+            cur.execute(
+                "UPDATE transactions SET category_id = ?, matched_rule_id = ? WHERE id = ?",
+                (category_id, rule_id, transaction_id),
+            )
+            self.db.commit()
+            return category_id
 
         # No match — clear any previous rule-based assignment
         cur.execute(
@@ -195,6 +202,8 @@ class Categorizer:
         pattern: str,
         match_type: str = "regex",
         priority: int = 0,
+        amount_min: float | None = None,
+        amount_max: float | None = None,
     ) -> int:
         """Add a new match rule and re-categorize all transactions.
 
@@ -202,9 +211,9 @@ class Categorizer:
         """
         cur = self.db.get_cursor()
         cur.execute(
-            "INSERT INTO match_rules (category_id, pattern, match_type, priority) "
-            "VALUES (?, ?, ?, ?)",
-            (category_id, pattern, match_type, priority),
+            "INSERT INTO match_rules (category_id, pattern, match_type, priority, amount_min, amount_max) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (category_id, pattern, match_type, priority, amount_min, amount_max),
         )
         self.db.commit()
         self.categorize_all()
@@ -227,7 +236,8 @@ class Categorizer:
         """Return all match rules ordered by priority."""
         cur = self.db.get_cursor()
         cur.execute(
-            "SELECT r.id, r.category_id, c.name, r.pattern, r.match_type, r.priority, r.enabled "
+            "SELECT r.id, r.category_id, c.name, r.pattern, r.match_type, "
+            "r.priority, r.enabled, r.amount_min, r.amount_max "
             "FROM match_rules r JOIN categories c ON r.category_id = c.id "
             "ORDER BY r.priority DESC, r.id ASC"
         )
@@ -240,6 +250,8 @@ class Categorizer:
                 "match_type": row[4],
                 "priority": row[5],
                 "enabled": bool(row[6]),
+                "amount_min": row[7],
+                "amount_max": row[8],
             }
             for row in cur.fetchall()
         ]

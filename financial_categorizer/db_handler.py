@@ -147,6 +147,8 @@ class DatabaseHandler:
                 match_type  TEXT NOT NULL DEFAULT 'regex'
                             CHECK(match_type IN ('regex','exact','contains')),
                 priority    INTEGER DEFAULT 0,
+                amount_min  REAL,
+                amount_max  REAL,
                 enabled     INTEGER DEFAULT 1,
                 created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )""")

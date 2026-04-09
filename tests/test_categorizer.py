@@ -506,3 +506,98 @@ class TestUncategorizedGrouped:
     def test_empty_when_all_categorized(self, db):
         cat = Categorizer(db)
         assert cat.get_uncategorized_grouped() == []
+
+
+class TestAmountBasedRules:
+    def test_amount_min(self, db):
+        cat = Categorizer(db)
+        a1 = db.add_account("Checking")
+        housing = cat.add_category("Housing")
+        parking = cat.add_category("Parking")
+
+        cat.add_rule(housing, "HSB", match_type="contains", amount_max=-4000)
+        cat.add_rule(parking, "HSB", match_type="contains", amount_min=-1100)
+
+        db.get_cursor().execute(
+            "INSERT INTO transactions (date, description, amount, account_id) VALUES (?, ?, ?, ?)",
+            (date(2026, 1, 1), "HSB Stockholm", -5000.0, a1),
+        )
+        db.get_cursor().execute(
+            "INSERT INTO transactions (date, description, amount, account_id) VALUES (?, ?, ?, ?)",
+            (date(2026, 1, 1), "HSB Stockholm", -1000.0, a1),
+        )
+        db.commit()
+
+        cat.categorize_new()
+        cur = db.get_cursor()
+        cur.execute("SELECT amount, category_id FROM transactions ORDER BY amount")
+        rows = cur.fetchall()
+        assert rows[0][1] == housing  # -5000 -> housing
+        assert rows[1][1] == parking  # -1000 -> parking
+
+    def test_amount_range(self, db):
+        cat = Categorizer(db)
+        a1 = db.add_account("Checking")
+        medium = cat.add_category("Medium")
+
+        cat.add_rule(medium, "Test", match_type="contains", amount_min=-200, amount_max=-50)
+
+        db.get_cursor().execute(
+            "INSERT INTO transactions (date, description, amount, account_id) VALUES (?, ?, ?, ?)",
+            (date(2026, 1, 1), "Test A", -100.0, a1),
+        )
+        db.get_cursor().execute(
+            "INSERT INTO transactions (date, description, amount, account_id) VALUES (?, ?, ?, ?)",
+            (date(2026, 1, 1), "Test B", -300.0, a1),
+        )
+        db.commit()
+
+        cat.categorize_new()
+        cur = db.get_cursor()
+        cur.execute("SELECT description, category_id FROM transactions ORDER BY amount")
+        rows = cur.fetchall()
+        assert rows[0][1] is None   # -300 out of range
+        assert rows[1][1] == medium # -100 in range
+
+    def test_rule_without_amount_matches_any(self, db):
+        cat = Categorizer(db)
+        a1 = db.add_account("Checking")
+        food = cat.add_category("Food")
+
+        cat.add_rule(food, "ICA", match_type="contains")
+
+        db.get_cursor().execute(
+            "INSERT INTO transactions (date, description, amount, account_id) VALUES (?, ?, ?, ?)",
+            (date(2026, 1, 1), "ICA", -50.0, a1),
+        )
+        db.get_cursor().execute(
+            "INSERT INTO transactions (date, description, amount, account_id) VALUES (?, ?, ?, ?)",
+            (date(2026, 1, 1), "ICA", -5000.0, a1),
+        )
+        db.commit()
+
+        cat.categorize_new()
+        cur = db.get_cursor()
+        cur.execute("SELECT category_id FROM transactions")
+        assert all(row[0] == food for row in cur.fetchall())
+
+    def test_amount_rule_takes_precedence_over_no_amount(self, db):
+        cat = Categorizer(db)
+        a1 = db.add_account("Checking")
+        food = cat.add_category("Food")
+        big = cat.add_category("Big Purchase")
+
+        # Same priority, amount-specific rule added after — should win via ordering
+        cat.add_rule(food, "Store", match_type="contains", priority=0)
+        cat.add_rule(big, "Store", match_type="contains", priority=1, amount_max=-1000)
+
+        db.get_cursor().execute(
+            "INSERT INTO transactions (date, description, amount, account_id) VALUES (?, ?, ?, ?)",
+            (date(2026, 1, 1), "Store A", -2000.0, a1),
+        )
+        db.commit()
+
+        cat.categorize_new()
+        cur = db.get_cursor()
+        cur.execute("SELECT category_id FROM transactions")
+        assert cur.fetchone()[0] == big

@@ -161,9 +161,14 @@ def cmd_rules(args):
 
         for r in rules:
             status = "enabled" if r["enabled"] else "disabled"
+            amt = ""
+            if r.get("amount_min") is not None or r.get("amount_max") is not None:
+                lo = f">={r['amount_min']}" if r['amount_min'] is not None else ""
+                hi = f"<={r['amount_max']}" if r['amount_max'] is not None else ""
+                amt = f"  amount:{lo}{hi}"
             print(f"  [{r['id']}] {r['category_name']:<20} "
                   f"{r['match_type']:<8} /{r['pattern']}/  "
-                  f"priority={r['priority']} ({status})")
+                  f"priority={r['priority']} ({status}){amt}")
     finally:
         db.disconnect()
 
@@ -174,7 +179,8 @@ def cmd_add_rule(args):
         cat = Categorizer(db)
         rule_id = cat.add_rule(
             args.category, args.pattern,
-            match_type=args.type, priority=args.priority
+            match_type=args.type, priority=args.priority,
+            amount_min=args.amount_min, amount_max=args.amount_max
         )
         print(f"Added rule {rule_id} and re-categorized all transactions")
     finally:
@@ -553,6 +559,8 @@ def main():
     p_add_rule.add_argument("--type", default="regex", choices=["regex", "exact", "contains"],
                             help="Match type (default: regex)")
     p_add_rule.add_argument("--priority", type=int, default=0, help="Rule priority (default: 0)")
+    p_add_rule.add_argument("--amount-min", type=float, help="Minimum amount to match (inclusive)")
+    p_add_rule.add_argument("--amount-max", type=float, help="Maximum amount to match (inclusive)")
     p_add_rule.set_defaults(func=cmd_add_rule)
 
     # remove-rule
