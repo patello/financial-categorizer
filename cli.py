@@ -388,7 +388,9 @@ def cmd_stats_top(args):
             return
         print(f"Top spending{(' for ' + args.month) if args.month else ''}:")
         for r in rows:
-            print(f"  {r['category_name']:<25} {r['total']:>10.2f}  ({r['count']} txns)")
+            month_str = r['month'] if not args.month else ''
+            month_col = f"{month_str}  " if month_str else ""
+            print(f"  {month_col}{r['category_name']:<25} {r['total']:>10.2f}  ({r['count']} txns)")
     finally:
         db.disconnect()
 
@@ -474,7 +476,7 @@ def main():
     p_add_acct.add_argument("name", help="Account name")
     p_add_acct.add_argument("--type", default="personal",
                             choices=["personal", "shared", "savings", "external"],
-                            help="Account type (default: personal)")
+                            help="Account type: personal (100%% yours), shared (split ownership), savings, external (default: personal)")
     p_add_acct.add_argument("--ownership", type=float, default=1.0,
                             help="Ownership ratio 0.0-1.0 (default: 1.0)")
     p_add_acct.add_argument("--currency", default="SEK", help="Currency (default: SEK)")
