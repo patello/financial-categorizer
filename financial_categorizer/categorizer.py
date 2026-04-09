@@ -283,6 +283,32 @@ class Categorizer:
             for row in cur.fetchall()
         ]
 
+    def get_uncategorized_grouped(self) -> list[dict]:
+        """Group uncategorized transactions by description.
+
+        Returns list of dicts with description, count, total, avg_amount,
+        account_names, sorted by count descending.
+        """
+        cur = self.db.get_cursor()
+        cur.execute(
+            "SELECT t.description, COUNT(*) as cnt, ROUND(SUM(t.amount), 2) as total, "
+            "ROUND(AVG(t.amount), 2) as avg_amount, GROUP_CONCAT(DISTINCT a.name) as accounts "
+            "FROM transactions t JOIN accounts a ON t.account_id = a.id "
+            "WHERE t.category_id IS NULL "
+            "GROUP BY t.description "
+            "ORDER BY cnt DESC"
+        )
+        return [
+            {
+                "description": row[0],
+                "count": row[1],
+                "total": row[2],
+                "avg_amount": row[3],
+                "accounts": row[4],
+            }
+            for row in cur.fetchall()
+        ]
+
     def preview_rule(
         self, pattern: str, match_type: str = "regex", limit: int = 20
     ) -> list[dict]:

@@ -231,15 +231,23 @@ def cmd_uncategorized(args):
     db = get_db(args.db)
     try:
         cat = Categorizer(db)
-        uncategorized = cat.get_uncategorized()
 
-        if not uncategorized:
-            print("All transactions are categorized.")
-            return
-
-        print(f"Uncategorized transactions ({len(uncategorized)}):")
-        for t in uncategorized:
-            print(f"  [{t['id']}] {t['date']}  {t['amount']:>10.2f}  {t['description']}")
+        if args.group:
+            groups = cat.get_uncategorized_grouped()
+            if not groups:
+                print("All transactions are categorized.")
+                return
+            print(f"Uncategorized by description ({len(groups)} groups):")
+            for g in groups:
+                print(f"  {g['count']:>3}x  {g['total']:>10.2f}  avg={g['avg_amount']:>8.2f}  {g['description']}")
+        else:
+            uncategorized = cat.get_uncategorized()
+            if not uncategorized:
+                print("All transactions are categorized.")
+                return
+            print(f"Uncategorized transactions ({len(uncategorized)}):")
+            for t in uncategorized:
+                print(f"  [{t['id']}] {t['date']}  {t['amount']:>10.2f}  {t['description']}")
     finally:
         db.disconnect()
 
@@ -567,6 +575,7 @@ def main():
 
     # uncategorized
     p_uncat = subparsers.add_parser("uncategorized", help="Show uncategorized transactions")
+    p_uncat.add_argument("--group", action="store_true", help="Group by description with counts and totals")
     p_uncat.set_defaults(func=cmd_uncategorized)
 
     # manual-match

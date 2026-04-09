@@ -468,3 +468,41 @@ class TestCategoryHelpers:
         subtree = cat.get_subtree(self.dining)
         names = {s["name"] for s in subtree}
         assert names == {"Restaurants", "Cafes"}
+
+
+class TestUncategorizedGrouped:
+    def test_groups_by_description(self, db):
+        cat = Categorizer(db)
+        a1 = db.add_account("Checking")
+        food = cat.add_category("Food")
+
+        # Uncategorized: 3x Swish (different amounts), 2x ATM
+        for amt in [-100.0, -50.0, -75.0]:
+            db.get_cursor().execute(
+                "INSERT INTO transactions (date, description, amount, account_id) VALUES (?, ?, ?, ?)",
+                (date(2026, 1, 1), "Swish Person A", amt, a1),
+            )
+        for amt in [-500.0, -200.0]:
+            db.get_cursor().execute(
+                "INSERT INTO transactions (date, description, amount, account_id) VALUES (?, ?, ?, ?)",
+                (date(2026, 1, 2), "ATM Withdrawal", amt, a1),
+            )
+        # Categorized: should not appear
+        db.get_cursor().execute(
+            "INSERT INTO transactions (date, description, amount, account_id, category_id) VALUES (?, ?, ?, ?, ?)",
+            (date(2026, 1, 1), "ICA", -80.0, a1, food),
+        )
+        db.commit()
+
+        groups = cat.get_uncategorized_grouped()
+        assert len(groups) == 2
+        # Sorted by count desc
+        assert groups[0]["description"] == "Swish Person A"
+        assert groups[0]["count"] == 3
+        assert groups[0]["total"] == pytest.approx(-225.0)
+        assert groups[1]["description"] == "ATM Withdrawal"
+        assert groups[1]["count"] == 2
+
+    def test_empty_when_all_categorized(self, db):
+        cat = Categorizer(db)
+        assert cat.get_uncategorized_grouped() == []
