@@ -340,8 +340,9 @@ class DatabaseHandler:
         Step 1: base = amount * account.ownership_ratio
         Step 2: apply link adjustments:
           - external_transfer (no to_id): adjusted_amount = 0
-          - everything else (internal_transfer, reimbursement):
-            neutralize both sides toward 0, scaled by ratio
+          - internal_transfer: both sides neutralize toward 0, scaled by ratio
+          - reimbursement: from side (reimb) neutralizes to 0,
+            to side (expense) gets credited by from's amount * ratio
         """
         cur = self.get_cursor()
 
@@ -365,8 +366,16 @@ class DatabaseHandler:
         for from_id, to_id, link_type, ratio in links:
             if link_type == "external_transfer":
                 adjustments[from_id] = "ZERO"  # marker to set to 0
-            else:
-                # internal_transfer / reimbursement: neutralize both sides toward 0
+            elif link_type == "reimbursement":
+                # from side (reimbursement): neutralize to 0
+                cur.execute("SELECT adjusted_amount FROM transactions WHERE id = ?", (from_id,))
+                from_adj = cur.fetchone()[0]
+                adjustments[from_id] = adjustments.get(from_id, 0) - from_adj * ratio
+                # to side (original expense): credit by the reimb amount
+                if to_id is not None:
+                    adjustments[to_id] = adjustments.get(to_id, 0) + from_adj * ratio
+            elif link_type == "internal_transfer":
+                # Both sides neutralize to 0
                 cur.execute("SELECT adjusted_amount FROM transactions WHERE id = ?", (from_id,))
                 from_adj = cur.fetchone()[0]
                 adjustments[from_id] = adjustments.get(from_id, 0) - from_adj * ratio

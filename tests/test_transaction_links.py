@@ -113,18 +113,20 @@ class TestReimbursement:
 
         tm.mark_reimbursement(t_reimb, t_expense)
 
+        # Reimb neutralizes to 0, expense gets credited
         assert _get_adjusted(db, t_reimb) == pytest.approx(0.0)
-        assert _get_adjusted(db, t_expense) == pytest.approx(0.0)
+        assert _get_adjusted(db, t_expense) == pytest.approx(-200.0)  # -500 + 300
 
     def test_partial_reimbursement(self, db, tm):
         a1 = db.add_account("Checking")
-        t_expense = _add_txn(db, datetime.date(2026, 1, 1), "Dinner", -500.0, a1, adjusted_amount=-500.0)
-        t_reimb = _add_txn(db, datetime.date(2026, 1, 5), "Reimb dinner", 300.0, a1, adjusted_amount=300.0)
+        t_expense = _add_txn(db, datetime.date(2026, 1, 1), "Dinner", -200.0, a1, adjusted_amount=-200.0)
+        t_reimb = _add_txn(db, datetime.date(2026, 1, 5), "Reimb dinner", 75.0, a1, adjusted_amount=75.0)
 
-        tm.mark_reimbursement(t_reimb, t_expense, ratio=0.5)
+        tm.mark_reimbursement(t_reimb, t_expense)
 
-        # 300 - 300*0.5 = 150
-        assert _get_adjusted(db, t_reimb) == pytest.approx(150.0)
+        # Reimb = 0, expense = -200 + 75 = -125
+        assert _get_adjusted(db, t_reimb) == pytest.approx(0.0)
+        assert _get_adjusted(db, t_expense) == pytest.approx(-125.0)
 
     def test_reimbursement_without_to(self, db, tm):
         """Reimbursement with to_id=None is allowed."""
@@ -134,6 +136,23 @@ class TestReimbursement:
         tm.link_transactions(t_reimb, None, "reimbursement")
 
         assert _get_adjusted(db, t_reimb) == pytest.approx(0.0)
+
+    def test_reimbursement_ratio_splits_across_expenses(self, db, tm):
+        """Ratio splits reimbursement credit across multiple expenses."""
+        a1 = db.add_account("Checking")
+        t_reimb = _add_txn(db, datetime.date(2026, 1, 5), "Reimb", 200.0, a1, adjusted_amount=200.0)
+        t_exp1 = _add_txn(db, datetime.date(2026, 1, 1), "Dinner 1", -200.0, a1, adjusted_amount=-200.0)
+        t_exp2 = _add_txn(db, datetime.date(2026, 1, 2), "Dinner 2", -200.0, a1, adjusted_amount=-200.0)
+
+        # Split 50/50 across two expenses
+        tm.mark_reimbursement(t_reimb, t_exp1, ratio=0.5)
+        tm.mark_reimbursement(t_reimb, t_exp2, ratio=0.5)
+
+        # Reimb: 200 - 200*0.5 - 200*0.5 = 0
+        assert _get_adjusted(db, t_reimb) == pytest.approx(0.0)
+        # Each expense gets 200*0.5 = 100 credit
+        assert _get_adjusted(db, t_exp1) == pytest.approx(-100.0)
+        assert _get_adjusted(db, t_exp2) == pytest.approx(-100.0)
 
 
 class TestUnlink:
