@@ -559,6 +559,87 @@ class TransferManager:
             for row in cur.fetchall()
         ]
 
+    def suggest_links(self, days_tolerance: int = 3, min_amount: float = 10.0) -> list[dict]:
+        """Suggest potential internal transfers between own accounts.
+
+        Finds pairs of transactions where:
+        - They belong to different accounts
+        - Their amounts are negatives of each other (one in, one out)
+        - Dates are within days_tolerance of each other
+        - Neither is already linked
+        - Absolute amount >= min_amount (filters noise)
+
+        Returns list of dicts with from/to transaction details.
+        """
+        cur = self.db.get_cursor()
+
+        # Get transactions not already involved in any link
+        cur.execute("""
+            SELECT t.id, t.account_id, t.date, t.amount, t.adjusted_amount,
+                   t.description, a.name as account_name
+            FROM transactions t
+            JOIN accounts a ON a.id = t.account_id
+            WHERE t.id NOT IN (
+                SELECT from_transaction_id FROM transaction_links
+                UNION
+                SELECT to_transaction_id FROM transaction_links WHERE to_transaction_id IS NOT NULL
+            )
+            AND ABS(t.amount) >= ?
+            ORDER BY t.date DESC, ABS(t.amount) DESC
+        """, (min_amount,))
+
+        rows = [
+            {
+                "id": r[0], "account_id": r[1], "date": r[2],
+                "amount": r[3], "adjusted_amount": r[4],
+                "description": r[5], "account_name": r[6],
+            }
+            for r in cur.fetchall()
+        ]
+
+        suggestions = []
+        used = set()
+
+        for i, a in enumerate(rows):
+            if a["id"] in used:
+                continue
+            for j in range(i + 1, len(rows)):
+                b = rows[j]
+                if b["id"] in used:
+                    continue
+                # Must be different accounts
+                if a["account_id"] == b["account_id"]:
+                    continue
+                # Amounts must be opposites (one positive, one negative, same magnitude)
+                if abs(a["amount"] + b["amount"]) > 0.01:
+                    continue
+                # Dates must be close
+                if abs((a["date"] - b["date"]).days) > days_tolerance:
+                    continue
+
+                # a is the outgoing (negative), b is the incoming (positive)
+                if a["amount"] > 0:
+                    a, b = b, a
+
+                suggestions.append({
+                    "from_transaction_id": a["id"],
+                    "from_date": a["date"],
+                    "from_amount": a["amount"],
+                    "from_description": a["description"],
+                    "from_account": a["account_name"],
+                    "to_transaction_id": b["id"],
+                    "to_date": b["date"],
+                    "to_amount": b["amount"],
+                    "to_description": b["description"],
+                    "to_account": b["account_name"],
+                    "days_apart": abs((a["date"] - b["date"]).days),
+                })
+                used.add(a["id"])
+                used.add(b["id"])
+                break  # each transaction matches at most once
+
+        return suggestions
+
     # Convenience methods
 
     def mark_transfer(

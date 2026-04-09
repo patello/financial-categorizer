@@ -467,6 +467,26 @@ def cmd_links(args):
         db.disconnect()
 
 
+def cmd_suggest_links(args):
+    db = get_db(args.db)
+    try:
+        tm = TransferManager(db)
+        suggestions = tm.suggest_links(days_tolerance=args.days, min_amount=args.min_amount)
+        if not suggestions:
+            print("No transfer suggestions found.")
+            return
+        print(f"Found {len(suggestions)} potential transfer(s):\n")
+        for i, s in enumerate(suggestions, 1):
+            print(f"  {i}. {s['from_account']} -> {s['to_account']}")
+            print(f"     From: #{s['from_transaction_id']}  {s['from_date']}  {s['from_amount']:.2f}  {s['from_description']}")
+            print(f"     To:   #{s['to_transaction_id']}  {s['to_date']}  {s['to_amount']:.2f}  {s['to_description']}")
+            print(f"     Days apart: {s['days_apart']}")
+            print(f"     link {s['from_transaction_id']} {s['to_transaction_id']} --type internal_transfer")
+            print()
+    finally:
+        db.disconnect()
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="financial-categorizer",
@@ -640,6 +660,12 @@ def main():
     p_links = subparsers.add_parser("links", help="List transaction links")
     p_links.add_argument("--type", choices=["internal_transfer", "external_transfer", "reimbursement"], help="Filter by type")
     p_links.set_defaults(func=cmd_links)
+
+    # suggest-links
+    p_suggest = subparsers.add_parser("suggest-links", help="Suggest potential internal transfers")
+    p_suggest.add_argument("--days", type=int, default=3, help="Max days apart (default: 3)")
+    p_suggest.add_argument("--min-amount", type=float, default=10.0, help="Minimum absolute amount (default: 10)")
+    p_suggest.set_defaults(func=cmd_suggest_links)
 
     args = parser.parse_args()
     if not args.command:
