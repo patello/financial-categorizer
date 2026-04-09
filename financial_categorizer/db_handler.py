@@ -74,6 +74,9 @@ class DatabaseHandler:
             self.conn.close()
             self.conn = None
 
+    # Alias — follows Python convention
+    close = disconnect
+
     def commit(self) -> None:
         """Commit pending changes. Raises if not connected."""
         if self.conn:
