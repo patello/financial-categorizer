@@ -643,6 +643,146 @@ class TransferManager:
 
         return suggestions
 
+    def auto_link_transfers(
+        self, days_tolerance: int = 3, dry_run: bool = False
+    ) -> dict:
+        """Auto-detect and link internal/external transfers.
+
+        Returns dict with 'internal' and 'external' lists of created/would-be-created links.
+        """
+        import re
+
+        cur = self.db.get_cursor()
+
+        transfer_patterns = ["överföring", "open banking", "direktinsättning"]
+        external_patterns = ["autogiro avanza bank"]
+        ob_destination_patterns = ["48521300790", "trustly group"]
+        account_number_re = re.compile(r"\d{4}\s\d{2}\s\d{5}")
+
+        # Build account number map from descriptions of all transactions
+        # Pattern: "3266 01 34189" or "32660134189"
+        cur.execute("SELECT id, account_id, description FROM transactions")
+        acct_num_map = {}  # account_id -> set of account numbers found in descriptions
+        for r in cur.fetchall():
+            nums = account_number_re.findall(r[2] or "")
+            if nums:
+                acct_num_map.setdefault(r[1], set()).update(n.replace(" ", "") for n in nums)
+
+        # Get IDs of already-linked transactions
+        cur.execute("SELECT from_transaction_id FROM transaction_links")
+        linked_from = {r[0] for r in cur.fetchall()}
+        cur.execute("SELECT to_transaction_id FROM transaction_links WHERE to_transaction_id IS NOT NULL")
+        linked_to = {r[0] for r in cur.fetchall()}
+        already_linked = linked_from | linked_to
+
+        # --- Internal transfer detection ---
+        cur.execute("""
+            SELECT t.id, t.account_id, t.date, t.amount, t.description, a.name
+            FROM transactions t
+            JOIN accounts a ON a.id = t.account_id
+            ORDER BY t.date DESC, ABS(t.amount) DESC
+        """)
+        all_txns = [
+            {"id": r[0], "account_id": r[1], "date": r[2], "amount": r[3],
+             "description": r[4] or "", "account_name": r[5]}
+            for r in cur.fetchall()
+        ]
+
+        desc_lower = lambda t: t["description"].lower()
+
+        def is_transfer_desc(t):
+            dl = desc_lower(t)
+            return any(p in dl for p in transfer_patterns)
+
+        def has_account_number_match(a, b):
+            """Check if a's description contains an account number associated with b's account."""
+            b_nums = acct_num_map.get(b["account_id"], set())
+            a_desc_nospace = a["description"].replace(" ", "")
+            for n in b_nums:
+                if n in a_desc_nospace:
+                    return True
+            a_nums = acct_num_map.get(a["account_id"], set())
+            b_desc_nospace = b["description"].replace(" ", "")
+            for n in a_nums:
+                if n in b_desc_nospace:
+                    return True
+            return False
+
+        internal_results = []
+        used = set()
+
+        candidates = [t for t in all_txns if t["id"] not in already_linked and abs(t["amount"]) >= 10]
+
+        for i, a in enumerate(candidates):
+            if a["id"] in used:
+                continue
+            for j in range(i + 1, len(candidates)):
+                b = candidates[j]
+                if b["id"] in used:
+                    continue
+                if a["account_id"] == b["account_id"]:
+                    continue
+                if abs(a["amount"] + b["amount"]) > 0.01:
+                    continue
+                if abs((a["date"] - b["date"]).days) > days_tolerance:
+                    continue
+
+                # Require transfer evidence
+                if not (is_transfer_desc(a) or is_transfer_desc(b) or has_account_number_match(a, b)):
+                    continue
+
+                out_tx = a if a["amount"] < 0 else b
+                in_tx = b if a["amount"] < 0 else a
+
+                internal_results.append({
+                    "from_transaction_id": out_tx["id"],
+                    "to_transaction_id": in_tx["id"],
+                    "from_account": out_tx["account_name"],
+                    "to_account": in_tx["account_name"],
+                    "amount": abs(out_tx["amount"]),
+                    "from_date": out_tx["date"],
+                    "to_date": in_tx["date"],
+                    "from_desc": out_tx["description"],
+                    "to_desc": in_tx["description"],
+                })
+                used.add(a["id"])
+                used.add(b["id"])
+                break
+
+        # --- External transfer detection ---
+        external_results = []
+        for t in candidates:
+            if t["id"] in used:
+                continue
+            dl = desc_lower(t)
+            if t["amount"] < 0 and (
+                any(p in dl for p in external_patterns)
+                or ("open banking" in dl and any(p in t["description"].replace(" ", "").lower() for p in ob_destination_patterns))
+            ):
+                external_results.append({
+                    "transaction_id": t["id"],
+                    "account": t["account_name"],
+                    "amount": t["amount"],
+                    "date": t["date"],
+                    "description": t["description"],
+                })
+                used.add(t["id"])
+
+        # Create links if not dry run
+        if not dry_run:
+            for item in internal_results:
+                self.link_transactions(
+                    item["from_transaction_id"], item["to_transaction_id"],
+                    "internal_transfer", 1.0, "auto-linked"
+                )
+            for item in external_results:
+                self.link_transactions(
+                    item["transaction_id"], None,
+                    "external_transfer", 1.0, "auto-linked"
+                )
+
+        return {"internal": internal_results, "external": external_results}
+
     # Convenience methods
 
     def mark_transfer(
