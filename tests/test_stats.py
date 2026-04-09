@@ -179,3 +179,57 @@ class TestViewsCreated:
         _seed(db)
         Stats(db)
         Stats(db)
+
+
+class TestCategoryType:
+
+    def test_transfer_excluded_from_monthly_summary(self, db):
+        a1 = db.add_account("Checking")
+        c = Categorizer(db)
+        food = c.add_category("Food", category_type="expense")
+        savings = c.add_category("Savings", category_type="transfer")
+        salary = c.add_category("Salary", category_type="income")
+
+        db.get_cursor().execute(
+            "INSERT INTO transactions (date, description, amount, account_id, adjusted_amount, category_id) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (datetime.date(2026, 1, 5), "Salary", 30000, a1, 30000, salary),
+        )
+        db.get_cursor().execute(
+            "INSERT INTO transactions (date, description, amount, account_id, adjusted_amount, category_id) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (datetime.date(2026, 1, 10), "ICA", -800, a1, -800, food),
+        )
+        db.get_cursor().execute(
+            "INSERT INTO transactions (date, description, amount, account_id, adjusted_amount, category_id) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (datetime.date(2026, 1, 15), "Savings", -5000, a1, -5000, savings),
+        )
+        db.commit()
+
+        stats = Stats(db)
+        rows = stats.monthly_summary(month="2026-01")
+        assert len(rows) == 1
+        # Transfer excluded from income/expenses
+        assert rows[0]["total_income"] == pytest.approx(30000)
+        assert rows[0]["total_expenses"] == pytest.approx(-800)
+        assert rows[0]["net"] == pytest.approx(29200)
+
+    def test_transfer_category_type_stored(self, db):
+        c = Categorizer(db)
+        cid = c.add_category("Savings", category_type="transfer")
+        cat = c.get_category(cid)
+        assert cat["category_type"] == "transfer"
+
+    def test_default_category_type_is_expense(self, db):
+        c = Categorizer(db)
+        cid = c.add_category("Food")
+        cat = c.get_category(cid)
+        assert cat["category_type"] == "expense"
+
+    def test_update_category_type(self, db):
+        c = Categorizer(db)
+        cid = c.add_category("Misc", category_type="expense")
+        c.update_category(cid, category_type="transfer")
+        cat = c.get_category(cid)
+        assert cat["category_type"] == "transfer"

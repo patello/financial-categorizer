@@ -24,7 +24,8 @@ class Stats:
             SELECT t.id, t.date, t.description, t.amount, t.adjusted_amount,
                    t.account_id, t.category_id, t.status, t.comment,
                    a.name AS account_name, a.type AS account_type,
-                   c.name AS category_name
+                   c.name AS category_name,
+                   COALESCE(c.category_type, 'expense') AS category_type
             FROM transactions t
             JOIN accounts a ON a.id = t.account_id
             LEFT JOIN categories c ON c.id = t.category_id
@@ -34,9 +35,9 @@ class Stats:
         cur.execute("""
             CREATE VIEW IF NOT EXISTS v_monthly_summary AS
             SELECT strftime('%Y-%m', date) AS month,
-                   ROUND(SUM(CASE WHEN adjusted_amount > 0 THEN adjusted_amount ELSE 0 END), 2) AS total_income,
-                   ROUND(SUM(CASE WHEN adjusted_amount < 0 THEN adjusted_amount ELSE 0 END), 2) AS total_expenses,
-                   ROUND(SUM(adjusted_amount), 2) AS net
+                   ROUND(SUM(CASE WHEN adjusted_amount > 0 AND category_type != 'transfer' THEN adjusted_amount ELSE 0 END), 2) AS total_income,
+                   ROUND(SUM(CASE WHEN adjusted_amount < 0 AND category_type != 'transfer' THEN adjusted_amount ELSE 0 END), 2) AS total_expenses,
+                   ROUND(SUM(CASE WHEN category_type != 'transfer' THEN adjusted_amount ELSE 0 END), 2) AS net
             FROM v_effective_transactions
             GROUP BY strftime('%Y-%m', date)
             ORDER BY month
@@ -46,6 +47,7 @@ class Stats:
             CREATE VIEW IF NOT EXISTS v_category_monthly AS
             SELECT COALESCE(c.name, 'Uncategorized') AS category_name,
                    t.category_id,
+                   COALESCE(c.category_type, 'expense') AS category_type,
                    strftime('%Y-%m', t.date) AS month,
                    ROUND(SUM(t.adjusted_amount), 2) AS total,
                    COUNT(*) AS count
@@ -58,7 +60,8 @@ class Stats:
 
         cur.execute("""
             CREATE VIEW IF NOT EXISTS v_daily_spending AS
-            SELECT date, adjusted_amount, COALESCE(c.name, 'Uncategorized') AS category_name
+            SELECT date, adjusted_amount, COALESCE(c.name, 'Uncategorized') AS category_name,
+                   COALESCE(c.category_type, 'expense') AS category_type
             FROM transactions t
             LEFT JOIN categories c ON c.id = t.category_id
             WHERE adjusted_amount IS NOT NULL AND adjusted_amount < 0

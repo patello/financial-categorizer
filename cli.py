@@ -82,7 +82,8 @@ def cmd_categories(args):
 
         def print_tree(node, indent=0):
             prefix = "  " * indent
-            print(f"{prefix}- {node['name']} (id={node['id']})")
+            type_str = f" [{node.get('category_type', 'expense')}]" if indent == 0 else ""
+            print(f"{prefix}- {node['name']} (id={node['id']}){type_str}")
             for child in sorted(children_map.get(node["id"], []), key=lambda x: x["name"]):
                 print_tree(child, indent + 1)
 
@@ -96,7 +97,7 @@ def cmd_add_category(args):
     db = get_db(args.db)
     try:
         cat = Categorizer(db)
-        cid = cat.add_category(args.name, parent_id=args.parent, description=args.description)
+        cid = cat.add_category(args.name, parent_id=args.parent, category_type=args.category_type, description=args.description)
         print(f"Created category '{args.name}' (id={cid})")
     finally:
         db.disconnect()
@@ -111,6 +112,8 @@ def cmd_update_category(args):
             kwargs["name"] = args.name
         if args.parent is not None:
             kwargs["parent_id"] = args.parent
+        if args.category_type is not None:
+            kwargs["category_type"] = args.category_type
         if args.description is not None:
             kwargs["description"] = args.description
 
@@ -507,6 +510,9 @@ def main():
     p_add_cat = subparsers.add_parser("add-category", help="Add a new category")
     p_add_cat.add_argument("name", help="Category name")
     p_add_cat.add_argument("--parent", type=int, help="Parent category ID")
+    p_add_cat.add_argument("--type", dest="category_type", default="expense",
+                           choices=["income", "expense", "transfer"],
+                           help="Category type (default: expense)")
     p_add_cat.add_argument("--description", help="Category description")
     p_add_cat.set_defaults(func=cmd_add_category)
 
@@ -515,6 +521,9 @@ def main():
     p_upd_cat.add_argument("id", type=int, help="Category ID")
     p_upd_cat.add_argument("--name", help="New name")
     p_upd_cat.add_argument("--parent", type=int, help="New parent category ID")
+    p_upd_cat.add_argument("--type", dest="category_type",
+                           choices=["income", "expense", "transfer"],
+                           help="New category type")
     p_upd_cat.add_argument("--description", help="New description")
     p_upd_cat.set_defaults(func=cmd_update_category)
 

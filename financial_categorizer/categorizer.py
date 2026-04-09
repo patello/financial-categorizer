@@ -315,13 +315,14 @@ class Categorizer:
     # ------------------------------------------------------------------ #
 
     def add_category(
-        self, name: str, parent_id: int | None = None, description: str = None
+        self, name: str, parent_id: int | None = None,
+        category_type: str = "expense", description: str = None
     ) -> int:
         """Add a new category. Returns the category id."""
         cur = self.db.get_cursor()
         cur.execute(
-            "INSERT INTO categories (name, parent_id, description) VALUES (?, ?, ?)",
-            (name, parent_id, description),
+            "INSERT INTO categories (name, parent_id, category_type, description) VALUES (?, ?, ?, ?)",
+            (name, parent_id, category_type, description),
         )
         self.db.commit()
         return cur.lastrowid
@@ -330,20 +331,20 @@ class Categorizer:
         """Look up a category by name."""
         cur = self.db.get_cursor()
         cur.execute(
-            "SELECT id, name, parent_id, description FROM categories WHERE name = ?",
+            "SELECT id, name, parent_id, category_type, description FROM categories WHERE name = ?",
             (name,),
         )
         row = cur.fetchone()
         if not row:
             return None
-        return {"id": row[0], "name": row[1], "parent_id": row[2], "description": row[3]}
+        return {"id": row[0], "name": row[1], "parent_id": row[2], "category_type": row[3], "description": row[4]}
 
     def list_categories(self) -> list[dict]:
         """Return all categories."""
         cur = self.db.get_cursor()
-        cur.execute("SELECT id, name, parent_id, description FROM categories ORDER BY name")
+        cur.execute("SELECT id, name, parent_id, category_type, description FROM categories ORDER BY name")
         return [
-            {"id": row[0], "name": row[1], "parent_id": row[2], "description": row[3]}
+            {"id": row[0], "name": row[1], "parent_id": row[2], "category_type": row[3], "description": row[4]}
             for row in cur.fetchall()
         ]
 
@@ -351,13 +352,13 @@ class Categorizer:
         """Look up a single category by ID."""
         cur = self.db.get_cursor()
         cur.execute(
-            "SELECT id, name, parent_id, description FROM categories WHERE id = ?",
+            "SELECT id, name, parent_id, category_type, description FROM categories WHERE id = ?",
             (category_id,),
         )
         row = cur.fetchone()
         if not row:
             return None
-        return {"id": row[0], "name": row[1], "parent_id": row[2], "description": row[3]}
+        return {"id": row[0], "name": row[1], "parent_id": row[2], "category_type": row[3], "description": row[4]}
 
     def get_parent(self, category_id: int) -> dict | None:
         """Return the parent category, or None if root."""
@@ -378,14 +379,14 @@ class Categorizer:
 
         def _recurse(pid, depth):
             cur.execute(
-                "SELECT id, name, parent_id, description FROM categories WHERE parent_id = ?",
+                "SELECT id, name, parent_id, category_type, description FROM categories WHERE parent_id = ?",
                 (pid,),
             )
             for row in cur.fetchall():
                 result.append({
                     "id": row[0], "name": row[1],
-                    "parent_id": row[2], "description": row[3],
-                    "depth": depth,
+                    "parent_id": row[2], "category_type": row[3],
+                    "description": row[4], "depth": depth,
                 })
                 _recurse(row[0], depth + 1)
 
@@ -409,9 +410,10 @@ class Categorizer:
         category_id: int,
         name: str | None = None,
         parent_id: int | None = ...,  # sentinel to distinguish None from unset
+        category_type: str | None = None,
         description: str | None = ...,  # sentinel
     ) -> bool:
-        """Update a category's name, parent, or description.
+        """Update a category's name, parent, type, or description.
 
         Only updates fields that are explicitly passed. Use None to clear
         parent_id or description. Returns True if any change was made.
@@ -424,6 +426,9 @@ class Categorizer:
         if parent_id is not ...:
             updates.append("parent_id = ?")
             params.append(parent_id)
+        if category_type is not None:
+            updates.append("category_type = ?")
+            params.append(category_type)
         if description is not ...:
             updates.append("description = ?")
             params.append(description)

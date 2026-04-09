@@ -104,6 +104,8 @@ class DatabaseHandler:
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 name        TEXT UNIQUE NOT NULL,
                 parent_id   INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+                category_type TEXT NOT NULL DEFAULT 'expense'
+                              CHECK(category_type IN ('income','expense','transfer')),
                 description TEXT
             )""")
 
