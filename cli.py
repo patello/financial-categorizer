@@ -487,6 +487,58 @@ def cmd_suggest_links(args):
         db.disconnect()
 
 
+def cmd_auto_link(args):
+    db = get_db(args.db)
+    try:
+        tm = TransferManager(db)
+        result = tm.auto_link_transfers(days_tolerance=args.days, dry_run=args.dry_run)
+        internal = result.get("internal", [])
+        if not internal:
+            print("No internal transfers found.")
+            return
+        action = "Would link" if args.dry_run else "Linked"
+        print(f"{action} {len(internal)} internal transfer(s):")
+        for item in internal:
+            print(f"  {item['from_account']} -> {item['to_account']}  {item['amount']:.2f}  "
+                  f"({item['from_date']} - {item['to_date']})")
+    finally:
+        db.disconnect()
+
+
+def cmd_transfer_rules(args):
+    db = get_db(args.db)
+    try:
+        rules = db.get_transfer_rules()
+        if not rules:
+            print("No transfer rules defined.")
+            return
+        for r in rules:
+            print(f"  [{r['id']}] {r['match_type']:<8} /{r['pattern']}/")
+    finally:
+        db.disconnect()
+
+
+def cmd_add_transfer_rule(args):
+    db = get_db(args.db)
+    try:
+        rule_id = db.add_transfer_rule(args.pattern, match_type=args.type)
+        print(f"Added transfer rule {rule_id}")
+    finally:
+        db.disconnect()
+
+
+def cmd_remove_transfer_rule(args):
+    db = get_db(args.db)
+    try:
+        removed = db.remove_transfer_rule(args.id)
+        if removed:
+            print(f"Removed transfer rule {args.id}")
+        else:
+            print(f"Transfer rule {args.id} not found")
+    finally:
+        db.disconnect()
+
+
 def cmd_stats_compare(args):
     db = get_db(args.db)
     try:
@@ -699,6 +751,28 @@ def main():
     p_suggest.add_argument("--days", type=int, default=3, help="Max days apart (default: 3)")
     p_suggest.add_argument("--min-amount", type=float, default=10.0, help="Minimum absolute amount (default: 10)")
     p_suggest.set_defaults(func=cmd_suggest_links)
+
+    # auto-link
+    p_auto_link = subparsers.add_parser("auto-link", help="Auto-detect internal transfers using transfer rules")
+    p_auto_link.add_argument("--days", type=int, default=3, help="Max days apart (default: 3)")
+    p_auto_link.add_argument("--dry-run", action="store_true", help="Show what would be linked without making changes")
+    p_auto_link.set_defaults(func=cmd_auto_link)
+
+    # transfer-rules
+    p_tr = subparsers.add_parser("transfer-rules", help="List transfer detection rules")
+    p_tr.set_defaults(func=cmd_transfer_rules)
+
+    # add-transfer-rule
+    p_atr = subparsers.add_parser("add-transfer-rule", help="Add a transfer detection rule")
+    p_atr.add_argument("pattern", help="Pattern to match")
+    p_atr.add_argument("--type", default="contains", choices=["regex", "exact", "contains"],
+                        help="Match type (default: contains)")
+    p_atr.set_defaults(func=cmd_add_transfer_rule)
+
+    # remove-transfer-rule
+    p_rtr = subparsers.add_parser("remove-transfer-rule", help="Remove a transfer detection rule")
+    p_rtr.add_argument("id", type=int, help="Rule ID")
+    p_rtr.set_defaults(func=cmd_remove_transfer_rule)
 
     # stats-compare
     p_compare = subparsers.add_parser("stats-compare", help="Month-over-month comparison")

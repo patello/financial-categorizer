@@ -178,6 +178,15 @@ class DatabaseHandler:
             )""")
 
         cur.execute("""
+            CREATE TABLE IF NOT EXISTS transfer_rules(
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                pattern     TEXT NOT NULL,
+                match_type  TEXT NOT NULL DEFAULT 'contains'
+                            CHECK(match_type IN ('regex','exact','contains')),
+                created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""")
+
+        cur.execute("""
             CREATE TABLE IF NOT EXISTS metadata(
                 key   TEXT PRIMARY KEY,
                 value TEXT
@@ -427,6 +436,35 @@ class DatabaseHandler:
             return existing["id"]
         return self.add_account(name, **kwargs)
 
+    # ------------------------------------------------------------------ #
+    #  Transfer rules
+    # ------------------------------------------------------------------ #
+
+    def get_transfer_rules(self) -> list[dict]:
+        cur = self.get_cursor()
+        cur.execute(
+            "SELECT id, pattern, match_type, created_at FROM transfer_rules ORDER BY id"
+        )
+        return [
+            {"id": r[0], "pattern": r[1], "match_type": r[2], "created_at": r[3]}
+            for r in cur.fetchall()
+        ]
+
+    def add_transfer_rule(self, pattern: str, match_type: str = "contains") -> int:
+        cur = self.get_cursor()
+        cur.execute(
+            "INSERT INTO transfer_rules (pattern, match_type) VALUES (?, ?)",
+            (pattern, match_type),
+        )
+        self.commit()
+        return cur.lastrowid
+
+    def remove_transfer_rule(self, rule_id: int) -> bool:
+        cur = self.get_cursor()
+        cur.execute("DELETE FROM transfer_rules WHERE id = ?", (rule_id,))
+        self.commit()
+        return cur.rowcount > 0
+
 
 # ------------------------------------------------------------------ #
 #  Transfer Manager
@@ -643,26 +681,55 @@ class TransferManager:
 
         return suggestions
 
+    # ------------------------------------------------------------------
+    #  Transfer rules
+    # ------------------------------------------------------------------
+
+    def get_transfer_rules(self) -> list[dict]:
+        cur = self.db.get_cursor()
+        cur.execute(
+            "SELECT id, pattern, match_type, created_at FROM transfer_rules ORDER BY id"
+        )
+        return [
+            {"id": r[0], "pattern": r[1], "match_type": r[2], "created_at": r[3]}
+            for r in cur.fetchall()
+        ]
+
+    def add_transfer_rule(self, pattern: str, match_type: str = "contains") -> int:
+        cur = self.db.get_cursor()
+        cur.execute(
+            "INSERT INTO transfer_rules (pattern, match_type) VALUES (?, ?)",
+            (pattern, match_type),
+        )
+        self.db.commit()
+        return cur.lastrowid
+
+    def remove_transfer_rule(self, rule_id: int) -> bool:
+        cur = self.db.get_cursor()
+        cur.execute("DELETE FROM transfer_rules WHERE id = ?", (rule_id,))
+        self.db.commit()
+        return cur.rowcount > 0
+
     def auto_link_transfers(
         self, days_tolerance: int = 3, dry_run: bool = False
     ) -> dict:
-        """Auto-detect and link internal/external transfers.
+        """Auto-detect and link internal transfers using configurable transfer rules.
 
-        Returns dict with 'internal' and 'external' lists of created/would-be-created links.
+        External transfers are now handled by categorize (transfer-type categories).
+        Returns dict with 'internal' list of created/would-be-created links.
         """
         import re
 
         cur = self.db.get_cursor()
 
-        transfer_patterns = ["överföring", "open banking", "direktinsättning"]
-        external_patterns = ["autogiro avanza bank"]
-        ob_destination_patterns = ["48521300790", "trustly group"]
+        # Load configurable transfer rules
+        transfer_rules = self.get_transfer_rules()
+
         account_number_re = re.compile(r"\d{4}\s\d{2}\s\d{5}")
 
         # Build account number map from descriptions of all transactions
-        # Pattern: "3266 01 34189" or "32660134189"
         cur.execute("SELECT id, account_id, description FROM transactions")
-        acct_num_map = {}  # account_id -> set of account numbers found in descriptions
+        acct_num_map = {}
         for r in cur.fetchall():
             nums = account_number_re.findall(r[2] or "")
             if nums:
@@ -688,14 +755,18 @@ class TransferManager:
             for r in cur.fetchall()
         ]
 
-        desc_lower = lambda t: t["description"].lower()
-
-        def is_transfer_desc(t):
-            dl = desc_lower(t)
-            return any(p in dl for p in transfer_patterns)
+        def matches_transfer_rule(desc: str) -> bool:
+            dl = desc.lower()
+            for rule in transfer_rules:
+                if rule["match_type"] == "contains" and rule["pattern"].lower() in dl:
+                    return True
+                if rule["match_type"] == "exact" and rule["pattern"].lower() == dl:
+                    return True
+                if rule["match_type"] == "regex" and re.search(rule["pattern"], desc, re.IGNORECASE):
+                    return True
+            return False
 
         def has_account_number_match(a, b):
-            """Check if a's description contains an account number associated with b's account."""
             b_nums = acct_num_map.get(b["account_id"], set())
             a_desc_nospace = a["description"].replace(" ", "")
             for n in b_nums:
@@ -727,8 +798,13 @@ class TransferManager:
                 if abs((a["date"] - b["date"]).days) > days_tolerance:
                     continue
 
-                # Require transfer evidence
-                if not (is_transfer_desc(a) or is_transfer_desc(b) or has_account_number_match(a, b)):
+                # Require transfer evidence: rule match or account number match
+                # If no transfer rules exist, only account number matching works
+                has_rule_match = (
+                    matches_transfer_rule(a["description"]) or
+                    matches_transfer_rule(b["description"])
+                )
+                if not (has_rule_match or has_account_number_match(a, b)):
                     continue
 
                 out_tx = a if a["amount"] < 0 else b
@@ -749,25 +825,6 @@ class TransferManager:
                 used.add(b["id"])
                 break
 
-        # --- External transfer detection ---
-        external_results = []
-        for t in candidates:
-            if t["id"] in used:
-                continue
-            dl = desc_lower(t)
-            if t["amount"] < 0 and (
-                any(p in dl for p in external_patterns)
-                or ("open banking" in dl and any(p in t["description"].replace(" ", "").lower() for p in ob_destination_patterns))
-            ):
-                external_results.append({
-                    "transaction_id": t["id"],
-                    "account": t["account_name"],
-                    "amount": t["amount"],
-                    "date": t["date"],
-                    "description": t["description"],
-                })
-                used.add(t["id"])
-
         # Create links if not dry run
         if not dry_run:
             for item in internal_results:
@@ -775,13 +832,8 @@ class TransferManager:
                     item["from_transaction_id"], item["to_transaction_id"],
                     "internal_transfer", 1.0, "auto-linked"
                 )
-            for item in external_results:
-                self.link_transactions(
-                    item["transaction_id"], None,
-                    "external_transfer", 1.0, "auto-linked"
-                )
 
-        return {"internal": internal_results, "external": external_results}
+        return {"internal": internal_results}
 
     # Convenience methods
 

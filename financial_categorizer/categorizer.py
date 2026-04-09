@@ -84,6 +84,10 @@ class Categorizer:
                 (category_id, rule_id, transaction_id),
             )
             self.db.commit()
+
+            # Auto-create external_transfer link for transfer-type categories
+            self._link_external_transfer(transaction_id, category_id)
+
             return category_id
 
         # No match — clear any previous rule-based assignment
@@ -93,6 +97,32 @@ class Categorizer:
         )
         self.db.commit()
         return None
+
+    def _link_external_transfer(self, transaction_id: int, category_id: int) -> None:
+        """Create an external_transfer link if the category is a transfer type.
+
+        Only creates if not already linked.
+        """
+        cur = self.db.get_cursor()
+        # Check category type
+        cur.execute("SELECT category_type FROM categories WHERE id = ?", (category_id,))
+        row = cur.fetchone()
+        if not row or row[0] != "transfer":
+            return
+        # Check if already linked
+        cur.execute(
+            "SELECT id FROM transaction_links WHERE from_transaction_id = ? AND link_type = 'external_transfer'",
+            (transaction_id,),
+        )
+        if cur.fetchone():
+            return
+        cur.execute(
+            "INSERT INTO transaction_links (from_transaction_id, to_transaction_id, link_type, ratio, comment) "
+            "VALUES (?, NULL, 'external_transfer', 1.0, 'auto-linked via categorize')",
+            (transaction_id,),
+        )
+        self.db.commit()
+        self.db.recalculate_adjusted_amounts()
 
     def categorize_new(self) -> dict:
         """Categorize only uncategorized transactions (category_id IS NULL).
