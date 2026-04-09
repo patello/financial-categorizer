@@ -211,3 +211,135 @@ class Stats:
             {"month": r[0], "total": r[1] if r[1] else 0.0, "count": r[2]}
             for r in cur.fetchall()
         ]
+
+    def compare(self, period: str = None, period_type: str = "calendar") -> list[dict]:
+        """Month-over-month comparison.
+
+        Args:
+            period: 'YYYY-MM' for calendar or 'YYYY-MM' for salary period starting that month.
+                    If None, compares last two periods.
+            period_type: 'calendar' (1st-last) or 'salary' (25th-24th).
+
+        Returns list of dicts with period, total_income, total_expenses, net,
+                prev_ prefixed fields, and delta fields.
+        """
+        cur = self.db.get_cursor()
+
+        if period_type == "salary":
+            # Salary period: 25th of previous month to 24th of current month
+            # Period '2026-03' means Feb 25 - Mar 24
+            rows = self._salary_period_summary(cur)
+        else:
+            rows = self._calendar_month_summary(cur)
+
+        if len(rows) < 2 and period is None:
+            # Not enough data for comparison, just return what we have
+            return rows
+
+        # Find the target and previous periods
+        if period:
+            target = None
+            for i, r in enumerate(rows):
+                if r["period"] == period:
+                    target = r
+                    prev = rows[i - 1] if i > 0 else None
+                    break
+            if not target:
+                return []
+        else:
+            target = rows[-1]
+            prev = rows[-2]
+
+        result = {
+            "period": target["period"],
+            "total_income": target["total_income"],
+            "total_expenses": target["total_expenses"],
+            "net": target["net"],
+        }
+
+        if prev:
+            result["prev_period"] = prev["period"]
+            result["prev_total_income"] = prev["total_income"]
+            result["prev_total_expenses"] = prev["total_expenses"]
+            result["prev_net"] = prev["net"]
+            result["income_delta"] = round(target["total_income"] - prev["total_income"], 2)
+            result["expense_delta"] = round(target["total_expenses"] - prev["total_expenses"], 2)
+            result["net_delta"] = round(target["net"] - prev["net"], 2)
+            # Percentage changes (handle zero prev)
+            result["income_pct"] = round((result["income_delta"] / abs(prev["total_income"])) * 100, 1) if prev["total_income"] else None
+            result["expense_pct"] = round((result["expense_delta"] / abs(prev["total_expenses"])) * 100, 1) if prev["total_expenses"] else None
+            result["net_pct"] = round((result["net_delta"] / abs(prev["net"])) * 100, 1) if prev["net"] else None
+
+        return result
+
+    def _calendar_month_summary(self, cur) -> list[dict]:
+        cur.execute(
+            "SELECT month, total_income, total_expenses, net "
+            "FROM v_monthly_summary ORDER BY month"
+        )
+        return [
+            {"period": r[0], "total_income": r[1] or 0.0,
+             "total_expenses": r[2] or 0.0, "net": r[3] or 0.0}
+            for r in cur.fetchall()
+        ]
+
+    def _salary_period_summary(self, cur) -> list[dict]:
+        """Aggregate by salary period (25th to 24th of next month).
+        Period label is the month of the 24th, e.g. '2026-03' = Feb 25 - Mar 24.
+        """
+        cur.execute(
+            "SELECT MIN(date), MAX(date) FROM v_effective_transactions "
+            "WHERE category_type != 'transfer'"
+        )
+        date_range = cur.fetchone()
+        if not date_range or not date_range[0]:
+            return []
+
+        min_date = date.fromisoformat(date_range[0]) if isinstance(date_range[0], str) else date_range[0]
+        max_date = date.fromisoformat(date_range[1]) if isinstance(date_range[1], str) else date_range[1]
+
+        # Generate all salary periods covering the data range
+        # Start from the month before min_date
+        results = []
+        from datetime import timedelta
+
+        # First period start: 25th of month before the earliest data
+        year, month = min_date.year, min_date.month
+        month -= 1
+        if month < 1:
+            month = 12
+            year -= 1
+        period_start = date(year, month, 25)
+
+        while period_start <= max_date:
+            # Period end: 24th of next month
+            end_month = period_start.month + 1
+            end_year = period_start.year
+            if end_month > 12:
+                end_month = 1
+                end_year += 1
+            period_end = date(end_year, end_month, 24)
+
+            # Label: the month of period_end
+            label = f"{period_end.year}-{period_end.month:02d}"
+
+            cur.execute(
+                "SELECT ROUND(SUM(CASE WHEN adjusted_amount > 0 THEN adjusted_amount ELSE 0 END), 2), "
+                "ROUND(SUM(CASE WHEN adjusted_amount < 0 THEN adjusted_amount ELSE 0 END), 2), "
+                "ROUND(SUM(adjusted_amount), 2) "
+                "FROM v_effective_transactions "
+                "WHERE category_type != 'transfer' AND date >= ? AND date <= ?",
+                (period_start.isoformat(), period_end.isoformat()),
+            )
+            row = cur.fetchone()
+            results.append({
+                "period": label,
+                "total_income": row[0] or 0.0,
+                "total_expenses": row[1] or 0.0,
+                "net": row[2] or 0.0,
+            })
+
+            # Advance to next period
+            period_start = date(end_year, end_month, 25)
+
+        return results

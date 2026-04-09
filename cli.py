@@ -487,6 +487,39 @@ def cmd_suggest_links(args):
         db.disconnect()
 
 
+def cmd_stats_compare(args):
+    db = get_db(args.db)
+    try:
+        stats = Stats(db)
+        result = stats.compare(period=args.month, period_type=args.period_type)
+        if not result:
+            print("Not enough data for comparison.")
+            return
+
+        if isinstance(result, list):
+            # Not enough periods for comparison
+            for r in result:
+                print(f"{r['period']}  income={r['total_income']:>10.2f}  "
+                      f"expenses={r['total_expenses']:>10.2f}  net={r['net']:>10.2f}")
+            return
+
+        pt = "salary period" if args.period_type == "salary" else "month"
+        print(f"Period: {result['period']} ({pt})")
+        print(f"  Income:   {result['total_income']:>10.2f}")
+        print(f"  Expenses: {result['total_expenses']:>10.2f}")
+        print(f"  Net:      {result['net']:>10.2f}")
+
+        if "prev_period" in result:
+            print(f"\nvs {result['prev_period']}:")
+            for field, label in [("income", "Income"), ("expense", "Expenses"), ("net", "Net")]:
+                delta = result[f"{field}_delta"]
+                pct = result[f"{field}_pct"]
+                pct_str = f" ({pct:+.1f}%)" if pct is not None else ""
+                print(f"  {label}: {delta:+.2f}{pct_str}")
+    finally:
+        db.disconnect()
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="financial-categorizer",
@@ -666,6 +699,13 @@ def main():
     p_suggest.add_argument("--days", type=int, default=3, help="Max days apart (default: 3)")
     p_suggest.add_argument("--min-amount", type=float, default=10.0, help="Minimum absolute amount (default: 10)")
     p_suggest.set_defaults(func=cmd_suggest_links)
+
+    # stats-compare
+    p_compare = subparsers.add_parser("stats-compare", help="Month-over-month comparison")
+    p_compare.add_argument("--month", help="Period to compare (YYYY-MM, default: latest)")
+    p_compare.add_argument("--period-type", choices=["calendar", "salary"], default="calendar",
+                          help="Period type: calendar (1st-last) or salary (25th-24th)")
+    p_compare.set_defaults(func=cmd_stats_compare)
 
     args = parser.parse_args()
     if not args.command:
