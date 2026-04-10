@@ -787,6 +787,8 @@ class TransferManager:
         for i, a in enumerate(candidates):
             if a["id"] in used:
                 continue
+            best_match = None
+            best_score = None
             for j in range(i + 1, len(candidates)):
                 b = candidates[j]
                 if b["id"] in used:
@@ -795,18 +797,27 @@ class TransferManager:
                     continue
                 if abs(a["amount"] + b["amount"]) > 0.01:
                     continue
-                if abs((a["date"] - b["date"]).days) > days_tolerance:
+                days_apart = abs((a["date"] - b["date"]).days)
+                if days_apart > days_tolerance:
                     continue
 
                 # Require transfer evidence: rule match or account number match
-                # If no transfer rules exist, only account number matching works
                 has_rule_match = (
                     matches_transfer_rule(a["description"]) or
                     matches_transfer_rule(b["description"])
                 )
-                if not (has_rule_match or has_account_number_match(a, b)):
+                has_acct_match = has_account_number_match(a, b)
+                if not (has_rule_match or has_acct_match):
                     continue
 
+                # Score: prefer (1) account number match, (2) fewer days apart
+                score = (0 if has_acct_match else 1, days_apart)
+                if best_score is None or score < best_score:
+                    best_score = score
+                    best_match = b
+
+            if best_match is not None:
+                b = best_match
                 out_tx = a if a["amount"] < 0 else b
                 in_tx = b if a["amount"] < 0 else a
 
@@ -823,7 +834,6 @@ class TransferManager:
                 })
                 used.add(a["id"])
                 used.add(b["id"])
-                break
 
         # Create links if not dry run
         if not dry_run:
