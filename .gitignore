@@ -2,6 +2,7 @@
 data/
 output/
 uncategorized.py
+finance.db
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
