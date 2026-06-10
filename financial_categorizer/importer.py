@@ -9,8 +9,21 @@ import csv
 import datetime
 import os
 import logging
+import re
 
 logger = logging.getLogger(__name__)
+
+
+def clean_description(desc: str) -> str:
+    """Normalize descriptions by removing bank transaction prefixes."""
+    d = desc.lower()
+    # Matches 'reservation kortköp', 'reservation kortkp', 'reservation kortk\xf6p', etc.
+    d = re.sub(r'^reservation\s+kortk[\xf6\ufffd\w]+p\s+', '', d)
+    # Matches 'kortköp YYMMDD', 'kortkp YYMMDD', etc.
+    d = re.sub(r'^kortk[\xf6\ufffd\w]+p\s+\d{6}\s+', '', d)
+    # Fallback to remove standalone reservation prefix
+    d = re.sub(r'^reservation\s+', '', d)
+    return d.strip()
 
 
 # Known CSV formats. Detection uses a unique header combo per format.
@@ -143,21 +156,47 @@ class CSVImporter:
                 status = "pending" if is_pending else "settled"
 
                 # For settled transactions, check if a pending one exists
-                # with the same description and account. If so, update it.
+                # with a matching description, same account, close date, and close amount.
                 if status == "settled":
                     cur.execute(
-                        "SELECT id FROM transactions "
-                        "WHERE description = ? AND account_id = ? AND status = 'pending'",
-                        (description, account_id),
+                        "SELECT id, description, date, amount FROM transactions "
+                        "WHERE account_id = ? AND status = 'pending'",
+                        (account_id,),
                     )
-                    pending_row = cur.fetchone()
-                    if pending_row:
+                    pending_candidates = cur.fetchall()
+                    
+                    matched_pending_id = None
+                    settled_desc_clean = clean_description(description)
+                    
+                    for p_id, p_desc, p_date, p_amount in pending_candidates:
+                        # 1. Description substring match
+                        p_desc_clean = clean_description(p_desc)
+                        if not (p_desc_clean in settled_desc_clean or settled_desc_clean in p_desc_clean):
+                            continue
+                        
+                        # 2. Date window match (settled date within 10 days after pending date)
+                        p_dt = datetime.date.fromisoformat(p_date) if isinstance(p_date, str) else p_date
+                        s_dt = datetime.date.fromisoformat(txn_date) if isinstance(txn_date, str) else txn_date
+                        days_diff = (s_dt - p_dt).days
+                        if not (0 <= days_diff <= 10):
+                            continue
+                        
+                        # 3. Amount tolerance match (same sign, within 1.0 SEK difference)
+                        if (p_amount < 0) != (amount < 0):
+                            continue
+                        if abs(p_amount - amount) > 1.0:
+                            continue
+                        
+                        matched_pending_id = p_id
+                        break  # Pick the first matching candidate
+                    
+                    if matched_pending_id is not None:
                         cur.execute(
-                            "UPDATE transactions SET date = ?, amount = ?, "
+                            "UPDATE transactions SET date = ?, description = ?, amount = ?, "
                             "adjusted_amount = ? * "
                             "(SELECT ownership_ratio FROM accounts WHERE accounts.id = account_id), "
                             "status = 'settled', source_file = ? WHERE id = ?",
-                            (txn_date, amount, amount, file_path, pending_row[0]),
+                            (txn_date, description, amount, amount, file_path, matched_pending_id),
                         )
                         settled_pending += 1
                         imported += 1

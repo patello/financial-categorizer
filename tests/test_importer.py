@@ -221,25 +221,16 @@ class TestAccountName:
             os.unlink(path)
 
 
-PENDING_NORDEA_CSV = (
-    "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
-    "Reserverat;-500,00;1111 11 11111;;;A1;999,99;SEK\n"
-    "2024-01-02;1000,00;;1111 11 11111;;SWISH FRÅN Namn;999,99;SEK\n"
-)
-
-SETTLED_NORDEA_CSV = (
-    "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
-    "2024-01-04;-480,00;1111 11 11111;;;A1;999,99;SEK\n"
-    "2024-01-02;1000,00;;1111 11 11111;;SWISH FRÅN Namn;999,99;SEK\n"
-)
-
-
 class TestPendingTransactions:
     def test_pending_imported_with_today_date(self, importer, db):
-        path = _write_csv(PENDING_NORDEA_CSV)
+        pending_csv = (
+            "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
+            "Reserverat;-500,00;1111 11 11111;;;A1;999,99;SEK\n"
+        )
+        path = _write_csv(pending_csv)
         try:
             result = importer.import_file(path, account_name="test")
-            assert result["imported"] == 2
+            assert result["imported"] == 1
 
             cur = db.get_cursor()
             cur.execute(
@@ -253,29 +244,38 @@ class TestPendingTransactions:
 
     def test_settled_updates_pending(self, importer, db):
         """A settled transaction with same description+account updates the pending one."""
-        pending_path = _write_csv(PENDING_NORDEA_CSV)
-        settled_path = _write_csv(SETTLED_NORDEA_CSV)
+        today = date.today().isoformat()
+        pending_csv = (
+            "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
+            "Reserverat;-500,00;1111 11 11111;;;A1;999,99;SEK\n"
+        )
+        settled_csv = (
+            "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
+            f"{today};-500,00;1111 11 11111;;;A1;999,99;SEK\n"
+        )
+        pending_path = _write_csv(pending_csv)
+        settled_path = _write_csv(settled_csv)
         try:
             importer.import_file(pending_path, account_name="test")
-
+    
             cur = db.get_cursor()
             cur.execute("SELECT COUNT(*) FROM transactions WHERE status = 'pending'")
             assert cur.fetchone()[0] == 1
-
+    
             result = importer.import_file(settled_path, account_name="test")
             assert result["settled_pending"] == 1
-            assert result["imported"] == 1  # 1 settled pending update, SWISH was duplicate
-
+            assert result["imported"] == 1
+    
             cur = db.get_cursor()
             cur.execute(
                 "SELECT date, amount, status FROM transactions "
                 "WHERE description = 'A1'"
             )
             row = cur.fetchone()
-            assert row[0] == date(2024, 1, 4)
-            assert row[1] == -480.0
+            assert row[0] == date.today()
+            assert row[1] == -500.0
             assert row[2] == "settled"
-
+    
             # No more pending rows
             cur.execute("SELECT COUNT(*) FROM transactions WHERE status = 'pending'")
             assert cur.fetchone()[0] == 0
@@ -285,17 +285,26 @@ class TestPendingTransactions:
 
     def test_pending_no_match_different_account(self, importer, db):
         """Pending on one account doesn't match settled on another."""
-        pending_path = _write_csv(PENDING_NORDEA_CSV)
-        settled_path = _write_csv(SETTLED_NORDEA_CSV)
+        today = date.today().isoformat()
+        pending_csv = (
+            "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
+            "Reserverat;-500,00;1111 11 11111;;;A1;999,99;SEK\n"
+        )
+        settled_csv = (
+            "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
+            f"{today};-500,00;1111 11 11111;;;A1;999,99;SEK\n"
+        )
+        pending_path = _write_csv(pending_csv)
+        settled_path = _write_csv(settled_csv)
         try:
             importer.import_file(pending_path, account_name="account_a")
             result = importer.import_file(settled_path, account_name="account_b")
-
+    
             assert result["settled_pending"] == 0
-
+    
             cur = db.get_cursor()
             cur.execute("SELECT COUNT(*) FROM transactions")
-            assert cur.fetchone()[0] == 4  # 2 + 2, no merge
+            assert cur.fetchone()[0] == 2  # 1 + 1, no merge
         finally:
             os.unlink(pending_path)
             os.unlink(settled_path)
@@ -307,3 +316,85 @@ class TestPendingTransactions:
             assert result["settled_pending"] == 0
         finally:
             os.unlink(path)
+
+    def test_settled_updates_pending_substring(self, importer, db):
+        """A settled transaction with prefix matches pending with reservation prefix."""
+        today = date.today().isoformat()
+        pending_csv = (
+            "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
+            "Reserverat;-51,00;1111 11 11111;;;Reservation Kortköp FABRIQUE STOCKH;999,99;SEK\n"
+        )
+        settled_csv = (
+            "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
+            f"{today};-51,00;1111 11 11111;;;Kortköp 260504 FABRIQUE STOCKHOLM I;999,99;SEK\n"
+        )
+        p_path = _write_csv(pending_csv)
+        s_path = _write_csv(settled_csv)
+        try:
+            importer.import_file(p_path, account_name="test")
+            result = importer.import_file(s_path, account_name="test")
+            assert result["settled_pending"] == 1
+            assert result["imported"] == 1
+
+            cur = db.get_cursor()
+            cur.execute("SELECT description, amount, status FROM transactions")
+            row = cur.fetchone()
+            assert row[0] == "Kortköp 260504 FABRIQUE STOCKHOLM I"
+            assert row[1] == -51.0
+            assert row[2] == "settled"
+        finally:
+            os.unlink(p_path)
+            os.unlink(s_path)
+
+    def test_settled_updates_pending_rounding(self, importer, db):
+        """A settled transaction updates pending even with up to 1.0 SEK rounding difference."""
+        today = date.today().isoformat()
+        pending_csv = (
+            "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
+            "Reserverat;-33,86;1111 11 11111;;;Reservation Kortköp Coop Reimershol;999,99;SEK\n"
+        )
+        settled_csv = (
+            "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
+            f"{today};-33,00;1111 11 11111;;;Kortköp 260409 COOP REIMERSHOLME;999,99;SEK\n"
+        )
+        p_path = _write_csv(pending_csv)
+        s_path = _write_csv(settled_csv)
+        try:
+            importer.import_file(p_path, account_name="test")
+            result = importer.import_file(s_path, account_name="test")
+            assert result["settled_pending"] == 1
+
+            cur = db.get_cursor()
+            cur.execute("SELECT amount, status FROM transactions")
+            row = cur.fetchone()
+            assert row[0] == -33.0
+            assert row[1] == "settled"
+        finally:
+            os.unlink(p_path)
+            os.unlink(s_path)
+
+    def test_settled_no_match_large_difference(self, importer, db):
+        """A settled transaction does not match pending if amount difference is > 1.0 SEK."""
+        today = date.today().isoformat()
+        pending_csv = (
+            "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
+            "Reserverat;-33,86;1111 11 11111;;;Reservation Kortköp Coop Reimershol;999,99;SEK\n"
+        )
+        settled_csv = (
+            "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
+            f"{today};-10,44;1111 11 11111;;;Kortköp 260409 COOP REIMERSHOLME;999,99;SEK\n"
+        )
+        p_path = _write_csv(pending_csv)
+        s_path = _write_csv(settled_csv)
+        try:
+            importer.import_file(p_path, account_name="test")
+            result = importer.import_file(s_path, account_name="test")
+            assert result["settled_pending"] == 0
+            assert result["imported"] == 1
+
+            cur = db.get_cursor()
+            cur.execute("SELECT COUNT(*) FROM transactions")
+            assert cur.fetchone()[0] == 2
+        finally:
+            os.unlink(p_path)
+            os.unlink(s_path)
