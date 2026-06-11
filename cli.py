@@ -577,7 +577,7 @@ def main():
         prog="financial-categorizer",
         description="Transaction categorization tool backed by SQLite.",
     )
-    parser.add_argument("--db", default="finance.db", help="Path to SQLite database (default: finance.db)")
+    parser.add_argument("--db", default="data/finance.db", help="Path to SQLite database (default: data/finance.db)")
 
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 

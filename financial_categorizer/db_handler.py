@@ -62,6 +62,11 @@ class DatabaseHandler:
 
     def connect(self) -> None:
         """Open a connection with type parsing enabled."""
+        if self.db_file != ":memory:":
+            import os
+            db_dir = os.path.dirname(self.db_file)
+            if db_dir:
+                os.makedirs(db_dir, exist_ok=True)
         self.conn = sqlite3.connect(
             self.db_file,
             detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES,
