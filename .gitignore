@@ -3,6 +3,7 @@ data/
 output/
 uncategorized.py
 finance.db
+*.db
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
