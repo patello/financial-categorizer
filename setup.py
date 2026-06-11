@@ -1,5 +1,6 @@
 from setuptools import setup
 
-setup(name="homeplotter",
-      packages=["."],
+setup(
+    name="financial-categorizer",
+    packages=["financial_categorizer"],
 )
