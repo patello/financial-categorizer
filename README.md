@@ -48,7 +48,7 @@ financial-categorizer recalculate
 
 ## Architecture
 
-All data lives in a single SQLite database (`finance.db` by default).
+All data lives in a single SQLite database (`data/finance.db` by default).
 
 ### Core tables
 - **accounts** — bank accounts with type and ownership ratio
