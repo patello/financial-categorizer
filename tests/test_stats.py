@@ -267,3 +267,11 @@ class TestNewAnalyticalViews:
         cur.execute("SELECT period, total_income, total_expenses FROM v_salary_period_summary")
         periods = {row[0]: (row[1], row[2]) for row in cur.fetchall()}
         assert "2026-01" in periods
+
+        # 5. Test v_breakout_categories
+        cur.execute("SELECT COUNT(*) FROM v_breakout_categories")
+        assert cur.fetchone()[0] > 0
+
+        # 6. Test v_uncategorized_groups
+        cur.execute("SELECT COUNT(*) FROM v_uncategorized_groups")
+        assert cur.fetchone()[0] > 0

@@ -47,5 +47,5 @@ This checklist tracks remaining tasks for the `financial-categorizer` project. A
   - These are physical tables containing stale, static data with encoding issues, but they start with `v_` (typically used for views).
   - If Grafana dashboards query them, convert them to dynamic SQL views instead. If not, drop them.
 * **Checklist**:
-  - [ ] Audit Grafana queries to see if either table is used.
-  - [ ] Safely drop or convert the tables to views.
+  - [x] Audit Grafana queries to see if either table is used.
+  - [x] Safely drop or convert the tables to views.

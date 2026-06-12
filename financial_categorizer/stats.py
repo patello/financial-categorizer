@@ -158,6 +158,102 @@ class Stats:
             ORDER BY period
         """)
 
+        cur.execute("""
+            CREATE VIEW IF NOT EXISTS v_breakout_categories AS
+            WITH breakout_mapping AS (
+                SELECT id,
+                       CASE
+                           WHEN id IN (4, 50) THEN 'Groceries'
+                           WHEN id = 6 THEN 'Loans'
+                           WHEN id IN (7, 8, 48) THEN 'Restaurants'
+                           WHEN id IN (14, 31) THEN 'Housing'
+                           WHEN id IN (26, 27, 28, 29, 52) THEN 'Car'
+                           WHEN id IN (12, 15, 35, 41) THEN 'Shopping'
+                           WHEN id IN (17, 19, 23, 24, 25, 42, 43, 44, 49) THEN 'Leisure'
+                           WHEN id IN (5, 11, 13, 22, 40, 45, 46, 47) THEN 'Household Other'
+                           WHEN id IN (10, 16, 30, 36, 37, 38, 39, 51) THEN 'Other'
+                           ELSE NULL
+                       END AS display_name
+                FROM categories
+            )
+            SELECT
+                COALESCE(bm.display_name, 'Uncategorized') AS display_name,
+                CASE
+                    WHEN COALESCE(bm.display_name, 'Uncategorized') = 'Groceries' THEN '4,50'
+                    WHEN COALESCE(bm.display_name, 'Uncategorized') = 'Loans' THEN '6'
+                    WHEN COALESCE(bm.display_name, 'Uncategorized') = 'Restaurants' THEN '7,8,48'
+                    WHEN COALESCE(bm.display_name, 'Uncategorized') = 'Housing' THEN '14,31'
+                    WHEN COALESCE(bm.display_name, 'Uncategorized') = 'Car' THEN '26,27,28,29,52'
+                    WHEN COALESCE(bm.display_name, 'Uncategorized') = 'Shopping' THEN '12,15,35,41'
+                    WHEN COALESCE(bm.display_name, 'Uncategorized') = 'Leisure' THEN '17,19,23,24,25,42,43,44,49'
+                    WHEN COALESCE(bm.display_name, 'Uncategorized') = 'Household Other' THEN '5,11,13,22,40,45,46,47'
+                    WHEN COALESCE(bm.display_name, 'Uncategorized') = 'Other' THEN '10,16,30,36,37,38,39,51'
+                    ELSE ''
+                END AS category_ids,
+                strftime('%Y-%m', t.date) AS month,
+                ROUND(SUM(t.adjusted_amount), 2) AS total
+            FROM transactions t
+            LEFT JOIN breakout_mapping bm ON t.category_id = bm.id
+            WHERE t.adjusted_amount IS NOT NULL 
+              AND t.adjusted_amount < 0
+              AND (t.category_id IS NULL OR t.category_id NOT IN (SELECT id FROM categories WHERE category_type = 'transfer'))
+            GROUP BY COALESCE(bm.display_name, 'Uncategorized'), month
+        """)
+
+        cur.execute("""
+            CREATE VIEW IF NOT EXISTS v_uncategorized_groups AS
+            WITH cleaned_txns AS (
+                SELECT
+                    t.id,
+                    t.date,
+                    t.amount,
+                    t.description AS latest_full_text,
+                    a.name AS account_name,
+                    CASE
+                        WHEN t.description LIKE 'Swish betalning %' THEN TRIM(SUBSTR(t.description, 16))
+                        WHEN t.description LIKE 'Swish inbetalning %' THEN TRIM(SUBSTR(t.description, 18))
+                        WHEN (t.description LIKE 'Kortk_p %' OR t.description LIKE 'Kortköp %') 
+                             THEN TRIM(SUBSTR(t.description, 16))
+                        ELSE t.description
+                    END AS group_key
+                FROM transactions t
+                JOIN accounts a ON a.id = t.account_id
+                WHERE t.category_id IS NULL
+            ),
+            grouped_txns AS (
+                SELECT
+                    group_key,
+                    COUNT(*) AS match_count,
+                    ROUND(SUM(amount), 2) AS total_amount,
+                    MAX(date) AS latest_date
+                FROM cleaned_txns
+                GROUP BY group_key
+            )
+            SELECT
+                g.group_key,
+                g.match_count,
+                g.total_amount,
+                g.latest_date,
+                (
+                    SELECT c.amount
+                    FROM cleaned_txns c
+                    WHERE c.group_key = g.group_key AND c.date = g.latest_date
+                    LIMIT 1
+                ) AS latest_amount,
+                (
+                    SELECT c.latest_full_text
+                    FROM cleaned_txns c
+                    WHERE c.group_key = g.group_key AND c.date = g.latest_date
+                    LIMIT 1
+                ) AS latest_full_text,
+                (
+                    SELECT group_concat(DISTINCT c.account_name)
+                    FROM cleaned_txns c
+                    WHERE c.group_key = g.group_key
+                ) AS account_names
+            FROM grouped_txns g
+        """)
+
         self.db.commit()
 
     def monthly_summary(self, month: str = None) -> list[dict]:
