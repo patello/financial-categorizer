@@ -1,0 +1,9 @@
+data/
+tests/
+.pytest_cache/
+__pycache__/
+.gitignore
+setup.py
+requirements.txt
+conftest.py
+todo.md

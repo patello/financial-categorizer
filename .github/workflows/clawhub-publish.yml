@@ -1,0 +1,42 @@
+name: Publish to ClawHub
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install ClawHub CLI
+        run: npm install -g clawhub
+
+      - name: Inject Git Tag Version into _meta.json
+        run: |
+          # Strip 'v' prefix from tag name (e.g. v2.0.4 -> 2.0.4)
+          VERSION="${{ github.ref_name }}"
+          VERSION="${VERSION#v}"
+          
+          # Overwrite the version field in _meta.json using jq
+          jq --arg ver "$VERSION" '.version = $ver' _meta.json > temp.json && mv temp.json _meta.json
+          
+          echo "Injected version: $VERSION"
+
+      - name: Publish to ClawHub
+        env:
+          CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
+        run: |
+          clawhub login --token "$CLAWHUB_TOKEN"
+          SLUG=$(jq -r '.slug' _meta.json)
+          VERSION=$(jq -r '.version' _meta.json)
+          clawhub publish . --slug "$SLUG" --version "$VERSION" --changelog "Automated release from git tag $VERSION"
