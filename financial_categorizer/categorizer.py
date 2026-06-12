@@ -31,7 +31,7 @@ class Categorizer:
             return pattern.lower() in description.lower()
         return False
 
-    def categorize(self, transaction_id: int) -> int | None:
+    def categorize(self, transaction_id: int, recalculate: bool = True) -> int | None:
         """Categorize a single transaction.
 
         Checks id_matches (manual override) first, then match_rules by priority.
@@ -86,7 +86,7 @@ class Categorizer:
             self.db.commit()
 
             # Auto-create external_transfer link for transfer-type categories
-            self._link_external_transfer(transaction_id, category_id)
+            self._link_external_transfer(transaction_id, category_id, recalculate=recalculate)
 
             return category_id
 
@@ -98,7 +98,7 @@ class Categorizer:
         self.db.commit()
         return None
 
-    def _link_external_transfer(self, transaction_id: int, category_id: int) -> None:
+    def _link_external_transfer(self, transaction_id: int, category_id: int, recalculate: bool = True) -> None:
         """Create an external_transfer link if the category is a transfer type.
 
         Only creates if not already linked.
@@ -122,7 +122,8 @@ class Categorizer:
             (transaction_id,),
         )
         self.db.commit()
-        self.db.recalculate_adjusted_amounts()
+        if recalculate:
+            self.db.recalculate_adjusted_amounts()
 
     def categorize_new(self) -> dict:
         """Categorize only uncategorized transactions (category_id IS NULL).
@@ -139,9 +140,12 @@ class Categorizer:
 
         matched = 0
         for txn_id in uncategorized:
-            result = self.categorize(txn_id)
+            result = self.categorize(txn_id, recalculate=False)
             if result is not None:
                 matched += 1
+
+        if matched > 0:
+            self.db.recalculate_adjusted_amounts()
 
         return {"matched": matched, "unmatched": len(uncategorized) - matched}
 
@@ -169,9 +173,11 @@ class Categorizer:
 
         matched = 0
         for txn_id in all_ids:
-            result = self.categorize(txn_id)
+            result = self.categorize(txn_id, recalculate=False)
             if result is not None:
                 matched += 1
+
+        self.db.recalculate_adjusted_amounts()
 
         return {"matched": matched, "unmatched": len(all_ids) - matched}
 

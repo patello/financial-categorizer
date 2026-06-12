@@ -142,6 +142,34 @@ class TestCategorizeAll:
         assert result["matched"] == 2
         assert result["unmatched"] == 1
 
+    def test_categorize_all_batch_recalculate_count(self, db, cat):
+        """Verify that db.recalculate_adjusted_amounts() is called only once in categorize_all."""
+        transfer_id = cat.add_category("Transfer", category_type="transfer")
+        cat.add_rule(transfer_id, "Transfer", match_type="contains")
+
+        # Add multiple transfer transactions that will trigger auto-linking and recalculation
+        _add_txn(db, "Transfer to Savings 1")
+        _add_txn(db, "Transfer to Savings 2")
+        _add_txn(db, "Transfer to Savings 3")
+
+        # Spy on the recalculate_adjusted_amounts method
+        call_count = 0
+        original_recalculate = db.recalculate_adjusted_amounts
+
+        def spy_recalculate():
+            nonlocal call_count
+            call_count += 1
+            return original_recalculate()
+
+        db.recalculate_adjusted_amounts = spy_recalculate
+
+        # Run categorize_all
+        cat.categorize_all()
+
+        # It should be called exactly once at the end
+        assert call_count == 1
+
+
 
 class TestCategorizeNew:
     def test_only_uncategorized(self, db, cat):
