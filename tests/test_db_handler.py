@@ -170,3 +170,47 @@ class TestDatabaseHandler:
                 "INSERT INTO id_matches (transaction_id, category_id) VALUES (?, ?)",
                 (txn_id, cat2),
             )
+
+    def test_cleanup_orphaned_records(self, db):
+        """Test that orphaned id_matches and transaction_links are deleted by cleanup_orphaned_records."""
+        cur = db.get_cursor()
+        cur.execute("PRAGMA foreign_keys = OFF;")
+
+        # Insert an orphaned id_matches record (pointing to non-existent txn ID 9999)
+        cur.execute("INSERT INTO categories (name) VALUES ('Test Orphan Cat')")
+        cat_id = cur.lastrowid
+        cur.execute("INSERT INTO id_matches (transaction_id, category_id) VALUES (9999, ?)", (cat_id,))
+
+        # Insert an orphaned transaction_links record (pointing to non-existent txn ID 9999)
+        cur.execute(
+            "INSERT INTO transaction_links (from_transaction_id, to_transaction_id, link_type, ratio) "
+            "VALUES (9999, NULL, 'external_transfer', 1.0)"
+        )
+        db.commit()
+        cur.execute("PRAGMA foreign_keys = ON;")
+
+        # Check they exist
+        cur.execute("SELECT COUNT(*) FROM id_matches WHERE transaction_id = 9999")
+        assert cur.fetchone()[0] == 1
+        cur.execute("SELECT COUNT(*) FROM transaction_links WHERE from_transaction_id = 9999")
+        assert cur.fetchone()[0] == 1
+
+        # Run dry-run cleanup
+        report = db.cleanup_orphaned_records(dry_run=True)
+        assert report["orphaned_id_matches"] == 1
+        assert report["orphaned_links"] == 1
+
+        # Records should still exist since it was a dry run
+        cur.execute("SELECT COUNT(*) FROM id_matches WHERE transaction_id = 9999")
+        assert cur.fetchone()[0] == 1
+
+        # Run actual cleanup
+        report = db.cleanup_orphaned_records(dry_run=False)
+        assert report["orphaned_id_matches"] == 1
+        assert report["orphaned_links"] == 1
+
+        # Records should be deleted
+        cur.execute("SELECT COUNT(*) FROM id_matches WHERE transaction_id = 9999")
+        assert cur.fetchone()[0] == 0
+        cur.execute("SELECT COUNT(*) FROM transaction_links WHERE from_transaction_id = 9999")
+        assert cur.fetchone()[0] == 0

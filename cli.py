@@ -421,6 +421,19 @@ def cmd_recalculate(args):
         db.disconnect()
 
 
+def cmd_cleanup(args):
+    db = get_db(args.db)
+    try:
+        report = db.cleanup_orphaned_records(dry_run=args.dry_run)
+        action = "Found" if args.dry_run else "Deleted"
+        print(f"{action} {report['orphaned_id_matches']} orphaned id_matches record(s).")
+        print(f"{action} {report['orphaned_links']} orphaned transaction_links record(s).")
+        if not args.dry_run and report['orphaned_links'] > 0:
+            print("Recalculated adjusted_amount for all transactions.")
+    finally:
+        db.disconnect()
+
+
 def cmd_link(args):
     db = get_db(args.db)
     try:
@@ -726,6 +739,11 @@ def main():
     # recalculate
     p_recalc = subparsers.add_parser("recalculate", help="Recalculate adjusted_amount for all transactions")
     p_recalc.set_defaults(func=cmd_recalculate)
+
+    # db-cleanup
+    p_cleanup = subparsers.add_parser("db-cleanup", help="Clean up orphaned database records")
+    p_cleanup.add_argument("--dry-run", action="store_true", help="Show orphaned records without deleting them")
+    p_cleanup.set_defaults(func=cmd_cleanup)
 
     # link
     p_link = subparsers.add_parser("link", help="Link two transactions")

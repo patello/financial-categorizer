@@ -100,6 +100,7 @@ Stats and views read this column directly — no JOINs at query time. Run `recal
 | `unlink <id>` | Remove a link |
 | `links` | List transaction links |
 | `recalculate` | Refresh adjusted_amount |
+| `db-cleanup [--dry-run]` | Clean up orphaned database records |
 
 ## Testing
 

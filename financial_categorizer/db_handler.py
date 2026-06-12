@@ -420,6 +420,55 @@ class DatabaseHandler:
         self.commit()
         return total_updated
 
+    def cleanup_orphaned_records(self, dry_run: bool = False) -> dict:
+        """Find and optionally delete orphaned rows in id_matches and transaction_links.
+
+        Returns a dict with count of orphaned records identified/removed:
+        {
+            "orphaned_id_matches": int,
+            "orphaned_links": int
+        }
+        """
+        cur = self.get_cursor()
+
+        # Find orphaned id_matches
+        cur.execute(
+            "SELECT COUNT(*) FROM id_matches "
+            "WHERE transaction_id NOT IN (SELECT id FROM transactions)"
+        )
+        orphaned_id_matches = cur.fetchone()[0]
+
+        # Find orphaned transaction_links
+        cur.execute(
+            "SELECT COUNT(*) FROM transaction_links "
+            "WHERE from_transaction_id NOT IN (SELECT id FROM transactions) "
+            "OR (to_transaction_id IS NOT NULL AND to_transaction_id NOT IN (SELECT id FROM transactions))"
+        )
+        orphaned_links = cur.fetchone()[0]
+
+        if not dry_run:
+            # Delete orphaned id_matches
+            cur.execute(
+                "DELETE FROM id_matches "
+                "WHERE transaction_id NOT IN (SELECT id FROM transactions)"
+            )
+            # Delete orphaned transaction_links
+            cur.execute(
+                "DELETE FROM transaction_links "
+                "WHERE from_transaction_id NOT IN (SELECT id FROM transactions) "
+                "OR (to_transaction_id IS NOT NULL AND to_transaction_id NOT IN (SELECT id FROM transactions))"
+            )
+            self.commit()
+
+            # Recalculate adjusted amounts in case any links were removed
+            if orphaned_links > 0:
+                self.recalculate_adjusted_amounts()
+
+        return {
+            "orphaned_id_matches": orphaned_id_matches,
+            "orphaned_links": orphaned_links
+        }
+
     def delete_account(self, account_id: int) -> bool:
         """Delete an account. Fails if transactions reference it (ON DELETE RESTRICT).
 
