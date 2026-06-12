@@ -36,8 +36,8 @@ This checklist tracks remaining tasks for the `financial-categorizer` project. A
     2. `v_daily_spending_moving_average`: 30-day moving average of daily spending.
     3. `v_category_monthly_averages`: Average monthly spending by category (replacing legacy static `average_tags.txt`).
 * **Checklist**:
-  - [ ] Add view creation queries to `_ensure_views()` in `stats.py`.
-  - [ ] Write tests to verify views are correctly created and queryable.
+  - [x] Add view creation queries to `_ensure_views()` in `stats.py`.
+  - [x] Write tests to verify views are correctly created and queryable.
 
 ---
 

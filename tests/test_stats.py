@@ -233,3 +233,37 @@ class TestCategoryType:
         c.update_category(cid, category_type="transfer")
         cat = c.get_category(cid)
         assert cat["category_type"] == "transfer"
+
+
+class TestNewAnalyticalViews:
+
+    def test_new_views_exist_and_queryable(self, db):
+        _seed(db)
+        # Stats initialization registers the views
+        Stats(db)
+        cur = db.get_cursor()
+
+        # 1. Test v_cumulative_spending_monthly
+        cur.execute("SELECT COUNT(*) FROM v_cumulative_spending_monthly")
+        assert cur.fetchone()[0] > 0
+
+        # Verify running cumulative sum resets by month
+        cur.execute("SELECT date, cumulative_amount FROM v_cumulative_spending_monthly ORDER BY date")
+        rows = cur.fetchall()
+        assert rows[0][1] < 0
+
+        # 2. Test v_daily_spending_moving_average
+        cur.execute("SELECT COUNT(*) FROM v_daily_spending_moving_average")
+        assert cur.fetchone()[0] > 0
+
+        # 3. Test v_category_monthly_averages
+        cur.execute("SELECT category_name, average_monthly_spending FROM v_category_monthly_averages")
+        averages = {row[0]: row[1] for row in cur.fetchall()}
+        assert "Food" in averages
+        assert "Rent" in averages
+        assert averages["Rent"] == -8000.0
+
+        # 4. Test v_salary_period_summary
+        cur.execute("SELECT period, total_income, total_expenses FROM v_salary_period_summary")
+        periods = {row[0]: (row[1], row[2]) for row in cur.fetchall()}
+        assert "2026-01" in periods

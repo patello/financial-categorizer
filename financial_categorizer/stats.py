@@ -68,6 +68,96 @@ class Stats:
             ORDER BY date
         """)
 
+        cur.execute("""
+            CREATE VIEW IF NOT EXISTS v_cumulative_spending_monthly AS
+            WITH daily_spending AS (
+                SELECT
+                    date,
+                    strftime('%Y-%m', date) AS month,
+                    ROUND(SUM(adjusted_amount), 2) AS daily_amount
+                FROM transactions t
+                LEFT JOIN categories c ON c.id = t.category_id
+                WHERE adjusted_amount IS NOT NULL AND adjusted_amount < 0
+                  AND (category_id IS NULL OR COALESCE(c.category_type, 'expense') != 'transfer')
+                GROUP BY date
+            )
+            SELECT
+                date,
+                month,
+                daily_amount,
+                ROUND(SUM(daily_amount) OVER (
+                    PARTITION BY month
+                    ORDER BY date
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                ), 2) AS cumulative_amount
+            FROM daily_spending
+        """)
+
+        cur.execute("""
+            CREATE VIEW IF NOT EXISTS v_daily_spending_moving_average AS
+            WITH RECURSIVE date_range(date) AS (
+                SELECT MIN(date) FROM transactions WHERE date IS NOT NULL
+                UNION ALL
+                SELECT date(date, '+1 day') FROM date_range WHERE date < (SELECT MAX(date) FROM transactions)
+            ),
+            daily_spending AS (
+                SELECT
+                    date,
+                    SUM(adjusted_amount) AS daily_amount
+                FROM transactions t
+                LEFT JOIN categories c ON c.id = t.category_id
+                WHERE adjusted_amount IS NOT NULL AND adjusted_amount < 0
+                  AND (category_id IS NULL OR COALESCE(c.category_type, 'expense') != 'transfer')
+                GROUP BY date
+            )
+            SELECT
+                dr.date,
+                COALESCE(ds.daily_amount, 0.0) AS daily_amount,
+                ROUND(AVG(COALESCE(ds.daily_amount, 0.0)) OVER (
+                    ORDER BY dr.date
+                    ROWS BETWEEN 29 PRECEDING AND CURRENT ROW
+                ), 2) AS moving_average
+            FROM date_range dr
+            LEFT JOIN daily_spending ds ON dr.date = ds.date
+        """)
+
+        cur.execute("""
+            CREATE VIEW IF NOT EXISTS v_category_monthly_averages AS
+            SELECT
+                category_name,
+                category_id,
+                category_type,
+                ROUND(AVG(total), 2) AS average_monthly_spending,
+                ROUND(AVG(count), 1) AS average_monthly_count
+            FROM v_category_monthly
+            GROUP BY category_id
+        """)
+
+        cur.execute("""
+            CREATE VIEW IF NOT EXISTS v_salary_period_summary AS
+            WITH txn_with_period AS (
+                SELECT
+                    t.adjusted_amount,
+                    COALESCE(c.category_type, 'expense') AS category_type,
+                    CASE
+                        WHEN strftime('%d', t.date) >= '25' THEN strftime('%Y-%m', date(t.date, 'start of month', '+1 month'))
+                        ELSE strftime('%Y-%m', t.date)
+                    END AS period
+                FROM transactions t
+                JOIN accounts a ON a.id = t.account_id
+                LEFT JOIN categories c ON c.id = t.category_id
+                WHERE t.adjusted_amount IS NOT NULL AND COALESCE(c.category_type, 'expense') != 'transfer'
+            )
+            SELECT
+                period,
+                ROUND(SUM(CASE WHEN adjusted_amount > 0 THEN adjusted_amount ELSE 0 END), 2) AS total_income,
+                ROUND(SUM(CASE WHEN adjusted_amount < 0 THEN adjusted_amount ELSE 0 END), 2) AS total_expenses,
+                ROUND(SUM(adjusted_amount), 2) AS net
+            FROM txn_with_period
+            GROUP BY period
+            ORDER BY period
+        """)
+
         self.db.commit()
 
     def monthly_summary(self, month: str = None) -> list[dict]:
@@ -288,58 +378,11 @@ class Stats:
         Period label is the month of the 24th, e.g. '2026-03' = Feb 25 - Mar 24.
         """
         cur.execute(
-            "SELECT MIN(date), MAX(date) FROM v_effective_transactions "
-            "WHERE category_type != 'transfer'"
+            "SELECT period, total_income, total_expenses, net "
+            "FROM v_salary_period_summary ORDER BY period"
         )
-        date_range = cur.fetchone()
-        if not date_range or not date_range[0]:
-            return []
-
-        min_date = date.fromisoformat(date_range[0]) if isinstance(date_range[0], str) else date_range[0]
-        max_date = date.fromisoformat(date_range[1]) if isinstance(date_range[1], str) else date_range[1]
-
-        # Generate all salary periods covering the data range
-        # Start from the month before min_date
-        results = []
-        from datetime import timedelta
-
-        # First period start: 25th of month before the earliest data
-        year, month = min_date.year, min_date.month
-        month -= 1
-        if month < 1:
-            month = 12
-            year -= 1
-        period_start = date(year, month, 25)
-
-        while period_start <= max_date:
-            # Period end: 24th of next month
-            end_month = period_start.month + 1
-            end_year = period_start.year
-            if end_month > 12:
-                end_month = 1
-                end_year += 1
-            period_end = date(end_year, end_month, 24)
-
-            # Label: the month of period_end
-            label = f"{period_end.year}-{period_end.month:02d}"
-
-            cur.execute(
-                "SELECT ROUND(SUM(CASE WHEN adjusted_amount > 0 THEN adjusted_amount ELSE 0 END), 2), "
-                "ROUND(SUM(CASE WHEN adjusted_amount < 0 THEN adjusted_amount ELSE 0 END), 2), "
-                "ROUND(SUM(adjusted_amount), 2) "
-                "FROM v_effective_transactions "
-                "WHERE category_type != 'transfer' AND date >= ? AND date <= ?",
-                (period_start.isoformat(), period_end.isoformat()),
-            )
-            row = cur.fetchone()
-            results.append({
-                "period": label,
-                "total_income": row[0] or 0.0,
-                "total_expenses": row[1] or 0.0,
-                "net": row[2] or 0.0,
-            })
-
-            # Advance to next period
-            period_start = date(end_year, end_month, 25)
-
-        return results
+        return [
+            {"period": r[0], "total_income": r[1] or 0.0,
+             "total_expenses": r[2] or 0.0, "net": r[3] or 0.0}
+            for r in cur.fetchall()
+        ]
