@@ -120,3 +120,65 @@ def test_cli_remove_transfer_rule_yes_flag(temp_db, monkeypatch, capsys):
     main()
     captured = capsys.readouterr()
     assert f"Removed transfer rule {rid}" in captured.out
+
+
+def test_cli_auto_link_yes_flag(temp_db, monkeypatch, capsys):
+    aid1 = temp_db.add_account("Checking")
+    aid2 = temp_db.add_account("Savings")
+
+    cur = temp_db.get_cursor()
+    cur.execute(
+        "INSERT INTO transactions (date, description, amount, account_id) VALUES ('2026-06-01', 'Transfer to savings', -150.0, ?)",
+        (aid1,)
+    )
+    cur.execute(
+        "INSERT INTO transactions (date, description, amount, account_id) VALUES ('2026-06-01', 'Transfer from checking', 150.0, ?)",
+        (aid2,)
+    )
+
+    temp_db.add_transfer_rule("transfer")
+    temp_db.commit()
+
+    test_args = ["cli.py", "--db", temp_db.db_file, "auto-link", "--yes"]
+    monkeypatch.setattr(sys, "argv", test_args)
+    main()
+
+    captured = capsys.readouterr()
+    assert "Linked 1 internal transfer(s):" in captured.out
+
+    cur.execute("SELECT COUNT(*) FROM transaction_links")
+    assert cur.fetchone()[0] == 1
+
+
+def test_cli_auto_link_interactive_no(temp_db, monkeypatch, capsys):
+    aid1 = temp_db.add_account("Checking")
+    aid2 = temp_db.add_account("Savings")
+
+    cur = temp_db.get_cursor()
+    cur.execute(
+        "INSERT INTO transactions (date, description, amount, account_id) VALUES ('2026-06-01', 'Transfer to savings', -150.0, ?)",
+        (aid1,)
+    )
+    cur.execute(
+        "INSERT INTO transactions (date, description, amount, account_id) VALUES ('2026-06-01', 'Transfer from checking', 150.0, ?)",
+        (aid2,)
+    )
+
+    temp_db.add_transfer_rule("transfer")
+    temp_db.commit()
+
+    test_args = ["cli.py", "--db", temp_db.db_file, "auto-link"]
+    monkeypatch.setattr(sys, "argv", test_args)
+    with patch("sys.stdin.isatty", return_value=True):
+        with patch("builtins.input", return_value="n"):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 0
+
+    captured = capsys.readouterr()
+    assert "Auto-Link Preview:" in captured.out
+    assert "Aborted." in captured.out
+
+    cur.execute("SELECT COUNT(*) FROM transaction_links")
+    assert cur.fetchone()[0] == 0
+

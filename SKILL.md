@@ -77,6 +77,7 @@ The following commands require confirmation:
 - `unlink <id> [--yes]`
 - `db-cleanup [--yes] [--dry-run]`
 - `remove-transfer-rule <id> [--yes]`
+- `auto-link [--yes] [--dry-run]`
 
 ## CLI Reference
 
@@ -105,6 +106,7 @@ The following commands require confirmation:
 | `link <from_id> [to_id] --type`| Link transactions (e.g. transfers, reimbursements) |
 | `unlink <id> [--yes]` | Remove a link (requires confirmation or `-y`) |
 | `links` | List all transaction links |
+| `auto-link [--dry-run] [--yes]` | Auto-detect and link internal transfers using transfer rules (requires confirmation or `-y` when not running dry-run) |
 | `recalculate` | Manually recalculate adjusted amounts for all transactions |
 | `db-cleanup [--dry-run] [--yes]` | Purge orphaned transaction links and rules (Integrity Cleanup) (requires confirmation or `-y` when not running dry-run) |
 | `remove-transfer-rule <id> [--yes]` | Remove a transfer detection rule (requires confirmation or `-y`) |
