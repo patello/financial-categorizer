@@ -12,6 +12,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -32,6 +34,24 @@ jobs:
           
           echo "Injected version: $VERSION"
 
+      - name: Generate Changelog
+        run: |
+          CURRENT_TAG="${{ github.ref_name }}"
+          
+          # Find the previous tag (excluding current)
+          PREV_TAG=$(git describe --tags --abbrev=0 "${CURRENT_TAG}^" 2>/dev/null || true)
+          
+          if [ -z "$PREV_TAG" ]; then
+            echo "No previous tag found. Generating changelog from beginning of history."
+            git log "${CURRENT_TAG}" --format="- %s" > changelog.txt
+          else
+            echo "Generating changelog between $PREV_TAG and $CURRENT_TAG."
+            git log "${PREV_TAG}..${CURRENT_TAG}" --format="- %s" > changelog.txt
+          fi
+          
+          echo "Changelog content:"
+          cat changelog.txt
+
       - name: Publish to ClawHub
         env:
           CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
@@ -39,4 +59,5 @@ jobs:
           clawhub login --token "$CLAWHUB_TOKEN"
           SLUG=$(jq -r '.slug' _meta.json)
           VERSION=$(jq -r '.version' _meta.json)
-          clawhub publish . --slug "$SLUG" --version "$VERSION" --changelog "Automated release from git tag $VERSION"
+          CHANGELOG=$(cat changelog.txt)
+          clawhub publish . --slug "$SLUG" --version "$VERSION" --changelog "$CHANGELOG"
