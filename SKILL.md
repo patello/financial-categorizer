@@ -53,6 +53,31 @@ workspace-finance/
 
 The skill provides logic. Your data stays private and portable.
 
+## Security & Data Integrity
+
+This tool modifies your local SQLite database. To prevent accidental data loss, please observe the following guidelines:
+
+> [!WARNING]
+> Always make a backup of your database before performing database cleanup, auto-linking, or destructive operations:
+> ```bash
+> # Simple file copy backup
+> cp data/finance.db data/finance.db.bak
+> 
+> # Safe SQLite backup command
+> sqlite3 data/finance.db ".backup data/finance.db.bak"
+> ```
+
+### Destructive Operations & Confirmation Prompts
+Destructive commands require interactive confirmation `[y/N]` when run in a terminal (TTY). If you are running these commands in automated scripts or non-interactive shells, you must pass the `--yes` or `-y` flag to bypass the prompt; otherwise, the command will abort with an error.
+
+The following commands require confirmation:
+- `delete-account <id> [--yes]`
+- `delete-category <id> [--yes] [--reassign <id>] [--force]`
+- `remove-rule <id> [--yes]`
+- `unlink <id> [--yes]`
+- `db-cleanup [--yes] [--dry-run]`
+- `remove-transfer-rule <id> [--yes]`
+
 ## CLI Reference
 
 | Command | Description |
@@ -61,14 +86,14 @@ The skill provides logic. Your data stays private and portable.
 | `accounts` | List all registered bank accounts |
 | `add-account <name>` | Create a new bank account |
 | `update-account <id>` | Update account ownership ratio, type, name, etc. |
-| `delete-account <id>` | Delete a bank account |
+| `delete-account <id> [--yes]` | Delete a bank account (requires confirmation or `-y`) |
 | `categories` | List all categories in tree view |
 | `add-category <name>` | Create a new category |
 | `update-category <id>` | Update category parents or fields |
-| `delete-category <id>` | Delete a category |
+| `delete-category <id> [--yes]` | Delete a category (requires confirmation or `-y`) |
 | `rules` | List all auto-categorization rules |
 | `add-rule <cat_id> <pattern>` | Add a categorization rule (regex, contains, exact) |
-| `remove-rule <id>` | Remove an auto-categorization rule |
+| `remove-rule <id> [--yes]` | Remove an auto-categorization rule (requires confirmation or `-y`) |
 | `preview <pattern>` | Preview which transactions match a pattern before adding a rule |
 | `categorize [--all]` | Run auto-categorization rules |
 | `uncategorized` | List all uncategorized transactions |
@@ -78,10 +103,11 @@ The skill provides logic. Your data stays private and portable.
 | `stats-trend <name>` | Monthly trend for a category |
 | `stats-top` | Top spending categories sorted by total expenses |
 | `link <from_id> [to_id] --type`| Link transactions (e.g. transfers, reimbursements) |
-| `unlink <id>` | Remove a link |
+| `unlink <id> [--yes]` | Remove a link (requires confirmation or `-y`) |
 | `links` | List all transaction links |
 | `recalculate` | Manually recalculate adjusted amounts for all transactions |
-| `db-cleanup [--dry-run]` | Purge orphaned transaction links and rules (Integrity Cleanup) |
+| `db-cleanup [--dry-run] [--yes]` | Purge orphaned transaction links and rules (Integrity Cleanup) (requires confirmation or `-y` when not running dry-run) |
+| `remove-transfer-rule <id> [--yes]` | Remove a transfer detection rule (requires confirmation or `-y`) |
 
 ## Skill Contents
 
