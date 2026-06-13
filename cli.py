@@ -26,6 +26,29 @@ def get_db(db_path: str) -> DatabaseHandler:
     return handler
 
 
+def confirm_action(prompt_message: str, yes_flag: bool = False) -> bool:
+    """Prompt the user for confirmation on destructive actions.
+
+    If yes_flag is True, bypasses confirmation and returns True.
+    If stdin is not a TTY and yes_flag is False, exits with error.
+    Otherwise, prompts interactively.
+    """
+    if yes_flag:
+        return True
+    if not sys.stdin.isatty():
+        print("Error: Interactive confirmation is not available. Use --yes or -y to bypass confirmation.", file=sys.stderr)
+        sys.exit(1)
+    try:
+        response = input(f"{prompt_message} [y/N]: ").strip().lower()
+        if response in ('y', 'yes'):
+            return True
+        print("Aborted.")
+        sys.exit(0)
+    except (KeyboardInterrupt, EOFError):
+        print("\nAborted.")
+        sys.exit(1)
+
+
 def cmd_import(args):
     db = get_db(args.db)
     try:
@@ -134,6 +157,58 @@ def cmd_delete_category(args):
     db = get_db(args.db)
     try:
         cat = Categorizer(db)
+        category = cat.get_category(args.id)
+        if not category:
+            print(f"Category {args.id} not found")
+            return
+
+        cur = db.get_cursor()
+        cur.execute("SELECT COUNT(*) FROM categories WHERE parent_id = ?", (args.id,))
+        child_count = cur.fetchone()[0]
+
+        cur.execute("SELECT COUNT(*) FROM match_rules WHERE category_id = ?", (args.id,))
+        rule_count = cur.fetchone()[0]
+
+        cur.execute("SELECT COUNT(*) FROM id_matches WHERE category_id = ?", (args.id,))
+        match_count = cur.fetchone()[0]
+
+        cur.execute("SELECT COUNT(*) FROM transactions WHERE category_id = ?", (args.id,))
+        txn_count = cur.fetchone()[0]
+
+        print("Category Details:")
+        print(f"  ID: {category['id']}")
+        print(f"  Name: {category['name']}")
+        print(f"  Type: {category['category_type']}")
+        if category['description']:
+            print(f"  Description: {category['description']}")
+        print("Downstream Effects:")
+        print(f"  Child categories: {child_count}")
+        print(f"  Associated match rules: {rule_count}")
+        print(f"  Manual transaction overrides: {match_count}")
+        print(f"  Transactions currently assigned to this category: {txn_count}")
+
+        if child_count > 0 and args.reassign is None:
+            print("  ERROR: Cannot delete category with children unless --reassign is specified.", file=sys.stderr)
+            sys.exit(1)
+
+        if (rule_count > 0 or match_count > 0) and args.reassign is None and not args.force:
+            print("  ERROR: Category has rules/matches. Use --reassign or --force to delete.", file=sys.stderr)
+            sys.exit(1)
+
+        if args.reassign:
+            reassign_cat = cat.get_category(args.reassign)
+            if not reassign_cat:
+                print(f"  ERROR: Reassignment target category {args.reassign} not found.", file=sys.stderr)
+                sys.exit(1)
+            print(f"  Children, rules, and manual matches will be reassigned to: '{reassign_cat['name']}' (ID: {args.reassign})")
+        else:
+            if rule_count > 0 or match_count > 0:
+                print("  WARNING: All associated match rules and manual matches will be permanently deleted.")
+            if txn_count > 0:
+                print("  WARNING: Transactions assigned to this category will be reset to uncategorized (NULL).")
+
+        confirm_action(f"Are you sure you want to delete category '{category['name']}'?", getattr(args, 'yes', False))
+
         deleted = cat.delete_category(args.id, reassign=args.reassign, force=args.force)
         if deleted:
             msg = f"Deleted category {args.id}"
@@ -191,6 +266,47 @@ def cmd_remove_rule(args):
     db = get_db(args.db)
     try:
         cat = Categorizer(db)
+        cur = db.get_cursor()
+        cur.execute(
+            "SELECT r.id, r.category_id, c.name, r.pattern, r.match_type, r.priority, r.enabled, r.amount_min, r.amount_max "
+            "FROM match_rules r JOIN categories c ON r.category_id = c.id "
+            "WHERE r.id = ?",
+            (args.id,)
+        )
+        row = cur.fetchone()
+        if not row:
+            print(f"Rule {args.id} not found")
+            return
+
+        rule = {
+            "id": row[0],
+            "category_id": row[1],
+            "category_name": row[2],
+            "pattern": row[3],
+            "match_type": row[4],
+            "priority": row[5],
+            "enabled": bool(row[6]),
+            "amount_min": row[7],
+            "amount_max": row[8],
+        }
+
+        print("Rule Details:")
+        print(f"  ID: {rule['id']}")
+        print(f"  Category: {rule['category_name']} (ID: {rule['category_id']})")
+        print(f"  Pattern: /{rule['pattern']}/ (Type: {rule['match_type']})")
+        print(f"  Priority: {rule['priority']}")
+        print(f"  Status: {'enabled' if rule['enabled'] else 'disabled'}")
+        if rule['amount_min'] is not None or rule['amount_max'] is not None:
+            lo = f">={rule['amount_min']}" if rule['amount_min'] is not None else ""
+            hi = f"<={rule['amount_max']}" if rule['amount_max'] is not None else ""
+            print(f"  Amount range: {lo} {hi}")
+
+        print("Downstream Effects:")
+        print("  Removing this rule will cause all transactions to be re-categorized.")
+        print("  Transactions previously categorized by this rule may revert to other rules or uncategorized.")
+
+        confirm_action(f"Are you sure you want to remove rule {rule['id']}?", getattr(args, 'yes', False))
+
         removed = cat.remove_rule(args.id)
         if removed:
             print(f"Removed rule {args.id} and re-categorized all transactions")
@@ -313,6 +429,33 @@ def cmd_update_account(args):
 def cmd_delete_account(args):
     db = get_db(args.db)
     try:
+        acct = db.get_account(args.id)
+        if not acct:
+            print(f"Account {args.id} not found")
+            return
+
+        cur = db.get_cursor()
+        cur.execute("SELECT COUNT(*) FROM transactions WHERE account_id = ?", (args.id,))
+        txn_count = cur.fetchone()[0]
+
+        print("Account Details:")
+        print(f"  ID: {acct['id']}")
+        print(f"  Name: {acct['name']}")
+        print(f"  Type: {acct['type']}")
+        print(f"  Ownership Ratio: {acct['ownership_ratio']}")
+        print(f"  Currency: {acct['currency']}")
+        if acct['description']:
+            print(f"  Description: {acct['description']}")
+
+        print("Downstream Effects:")
+        if txn_count > 0:
+            print(f"  WARNING: There are {txn_count} transactions associated with this account.")
+            print("           Deleting this account will FAIL due to database integrity restrictions (ON DELETE RESTRICT).")
+        else:
+            print("  No transactions are associated with this account. It can be safely deleted.")
+
+        confirm_action(f"Are you sure you want to delete account '{acct['name']}'?", getattr(args, 'yes', False))
+
         deleted = db.delete_account(args.id)
         if deleted:
             print(f"Deleted account {args.id}")
@@ -424,6 +567,24 @@ def cmd_recalculate(args):
 def cmd_cleanup(args):
     db = get_db(args.db)
     try:
+        if not args.dry_run:
+            # Run dry-run style query to show what is about to be deleted
+            report = db.cleanup_orphaned_records(dry_run=True)
+            total_orphaned = report['orphaned_id_matches'] + report['orphaned_links']
+            if total_orphaned == 0:
+                print("No orphaned records found. Database is clean.")
+                return
+
+            print("Database Cleanup Preview:")
+            print(f"  Orphaned ID matches to be deleted: {report['orphaned_id_matches']}")
+            print(f"  Orphaned transaction links to be deleted: {report['orphaned_links']}")
+            print("Downstream Effects:")
+            print("  This will permanently delete the orphaned records listed above.")
+            if report['orphaned_links'] > 0:
+                print("  Adjusted amounts for all transactions will be recalculated.")
+
+            confirm_action("Are you sure you want to proceed with database cleanup?", getattr(args, 'yes', False))
+
         report = db.cleanup_orphaned_records(dry_run=args.dry_run)
         action = "Found" if args.dry_run else "Deleted"
         print(f"{action} {report['orphaned_id_matches']} orphaned id_matches record(s).")
@@ -453,6 +614,42 @@ def cmd_link(args):
 def cmd_unlink(args):
     db = get_db(args.db)
     try:
+        cur = db.get_cursor()
+        cur.execute(
+            "SELECT id, from_transaction_id, to_transaction_id, link_type, ratio, comment "
+            "FROM transaction_links WHERE id = ?",
+            (args.id,)
+        )
+        row = cur.fetchone()
+        if not row:
+            print(f"Link {args.id} not found")
+            return
+
+        link_id, from_id, to_id, link_type, ratio, comment = row
+
+        print("Link Details:")
+        print(f"  ID: {link_id}")
+        print(f"  Type: {link_type}")
+        print(f"  Ratio: {ratio}")
+        if comment:
+            print(f"  Comment: {comment}")
+
+        cur.execute("SELECT id, date, description, amount FROM transactions WHERE id = ?", (from_id,))
+        from_txn = cur.fetchone()
+        if from_txn:
+            print(f"  From Transaction: [{from_txn[0]}] {from_txn[1]} | {from_txn[2]} | {from_txn[3]:.2f}")
+
+        if to_id:
+            cur.execute("SELECT id, date, description, amount FROM transactions WHERE id = ?", (to_id,))
+            to_txn = cur.fetchone()
+            if to_txn:
+                print(f"  To Transaction:   [{to_txn[0]}] {to_txn[1]} | {to_txn[2]} | {to_txn[3]:.2f}")
+
+        print("Downstream Effects:")
+        print("  Removing this link will revert the adjusted_amount for these transactions to their base values.")
+
+        confirm_action(f"Are you sure you want to remove link {link_id}?", getattr(args, 'yes', False))
+
         tm = TransferManager(db)
         removed = tm.unlink(args.id)
         if removed:
@@ -543,6 +740,22 @@ def cmd_add_transfer_rule(args):
 def cmd_remove_transfer_rule(args):
     db = get_db(args.db)
     try:
+        cur = db.get_cursor()
+        cur.execute("SELECT id, pattern, match_type FROM transfer_rules WHERE id = ?", (args.id,))
+        row = cur.fetchone()
+        if not row:
+            print(f"Transfer rule {args.id} not found")
+            return
+
+        rule_id, pattern, match_type = row
+        print("Transfer Rule Details:")
+        print(f"  ID: {rule_id}")
+        print(f"  Pattern: /{pattern}/ (Type: {match_type})")
+        print("Downstream Effects:")
+        print("  Removing this rule will prevent auto-link from automatically linking new matching transactions.")
+
+        confirm_action(f"Are you sure you want to remove transfer rule {rule_id}?", getattr(args, 'yes', False))
+
         removed = db.remove_transfer_rule(args.id)
         if removed:
             print(f"Removed transfer rule {args.id}")
@@ -632,6 +845,7 @@ def main():
     # delete-account
     p_del_acct = subparsers.add_parser("delete-account", help="Delete an account")
     p_del_acct.add_argument("id", type=int, help="Account ID")
+    p_del_acct.add_argument("--yes", "-y", action="store_true", help="Bypass confirmation prompt")
     p_del_acct.set_defaults(func=cmd_delete_account)
 
     # categories
@@ -664,6 +878,7 @@ def main():
     p_del_cat.add_argument("id", type=int, help="Category ID")
     p_del_cat.add_argument("--reassign", type=int, help="Reassign children/rules/matches to this category")
     p_del_cat.add_argument("--force", action="store_true", help="Force deletion without reassign (children still require --reassign)")
+    p_del_cat.add_argument("--yes", "-y", action="store_true", help="Bypass confirmation prompt")
     p_del_cat.set_defaults(func=cmd_delete_category)
 
     # rules
@@ -684,6 +899,7 @@ def main():
     # remove-rule
     p_rem_rule = subparsers.add_parser("remove-rule", help="Remove a match rule")
     p_rem_rule.add_argument("id", type=int, help="Rule ID")
+    p_rem_rule.add_argument("--yes", "-y", action="store_true", help="Bypass confirmation prompt")
     p_rem_rule.set_defaults(func=cmd_remove_rule)
 
     # preview
@@ -743,6 +959,7 @@ def main():
     # db-cleanup
     p_cleanup = subparsers.add_parser("db-cleanup", help="Clean up orphaned database records")
     p_cleanup.add_argument("--dry-run", action="store_true", help="Show orphaned records without deleting them")
+    p_cleanup.add_argument("--yes", "-y", action="store_true", help="Bypass confirmation prompt")
     p_cleanup.set_defaults(func=cmd_cleanup)
 
     # link
@@ -757,6 +974,7 @@ def main():
     # unlink
     p_unlink = subparsers.add_parser("unlink", help="Remove a transaction link")
     p_unlink.add_argument("id", type=int, help="Link ID")
+    p_unlink.add_argument("--yes", "-y", action="store_true", help="Bypass confirmation prompt")
     p_unlink.set_defaults(func=cmd_unlink)
 
     # links
@@ -790,6 +1008,7 @@ def main():
     # remove-transfer-rule
     p_rtr = subparsers.add_parser("remove-transfer-rule", help="Remove a transfer detection rule")
     p_rtr.add_argument("id", type=int, help="Rule ID")
+    p_rtr.add_argument("--yes", "-y", action="store_true", help="Bypass confirmation prompt")
     p_rtr.set_defaults(func=cmd_remove_transfer_rule)
 
     # stats-compare

@@ -72,6 +72,31 @@ All data lives in a single SQLite database (`data/finance.db` by default).
 
 Stats and views read this column directly — no JOINs at query time. Run `recalculate` to refresh after any manual changes.
 
+## Security & Data Integrity
+
+This tool modifies your local SQLite database. To prevent accidental data loss, please observe the following guidelines:
+
+> [!WARNING]
+> Always make a backup of your database before performing database cleanup, auto-linking, or destructive operations:
+> ```bash
+> # Simple file copy backup
+> cp data/finance.db data/finance.db.bak
+> 
+> # Safe SQLite backup command
+> sqlite3 data/finance.db ".backup data/finance.db.bak"
+> ```
+
+### Destructive Operations & Confirmation Prompts
+Destructive commands require interactive confirmation `[y/N]` when run in a terminal (TTY). If you are running these commands in automated scripts or non-interactive shells, you must pass the `--yes` or `-y` flag to bypass the prompt; otherwise, the command will abort with an error.
+
+The following commands require confirmation:
+- `delete-account <id> [--yes]`
+- `delete-category <id> [--yes] [--reassign <id>] [--force]`
+- `remove-rule <id> [--yes]`
+- `unlink <id> [--yes]`
+- `db-cleanup [--yes] [--dry-run]`
+- `remove-transfer-rule <id> [--yes]`
+
 ## CLI Reference
 
 | Command | Description |
@@ -80,14 +105,14 @@ Stats and views read this column directly — no JOINs at query time. Run `recal
 | `accounts` | List accounts |
 | `add-account <name>` | Create an account |
 | `update-account <id>` | Update account fields |
-| `delete-account <id>` | Delete an account |
+| `delete-account <id> [--yes]` | Delete an account (requires confirmation or `-y`) |
 | `categories` | List categories (tree view) |
 | `add-category <name>` | Create a category |
 | `update-category <id>` | Update category fields |
-| `delete-category <id>` | Delete a category |
+| `delete-category <id> [--yes]` | Delete a category (requires confirmation or `-y`) |
 | `rules` | List match rules |
 | `add-rule <cat> <pattern>` | Add a categorization rule |
-| `remove-rule <id>` | Remove a rule |
+| `remove-rule <id> [--yes]` | Remove a rule (requires confirmation or `-y`) |
 | `preview <pattern>` | Preview what a rule would match |
 | `categorize [--all]` | Run auto-categorization |
 | `uncategorized` | Show uncategorized transactions |
@@ -97,10 +122,11 @@ Stats and views read this column directly — no JOINs at query time. Run `recal
 | `stats-trend <name>` | Monthly breakdown for a category |
 | `stats-top` | Top spending categories |
 | `link <from> [to] --type` | Link transactions |
-| `unlink <id>` | Remove a link |
+| `unlink <id> [--yes]` | Remove a link (requires confirmation or `-y`) |
 | `links` | List transaction links |
 | `recalculate` | Refresh adjusted_amount |
-| `db-cleanup [--dry-run]` | Clean up orphaned database records |
+| `db-cleanup [--dry-run] [--yes]` | Clean up orphaned database records (requires confirmation or `-y` when not running dry-run) |
+| `remove-transfer-rule <id> [--yes]` | Remove a transfer detection rule (requires confirmation or `-y`) |
 
 ## Testing
 
