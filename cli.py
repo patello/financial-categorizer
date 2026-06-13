@@ -701,6 +701,24 @@ def cmd_auto_link(args):
     db = get_db(args.db)
     try:
         tm = TransferManager(db)
+        if not args.dry_run:
+            result = tm.auto_link_transfers(days_tolerance=args.days, dry_run=True)
+            internal = result.get("internal", [])
+            if not internal:
+                print("No internal transfers found.")
+                return
+
+            print("Auto-Link Preview:")
+            print(f"  Would link {len(internal)} internal transfer(s):")
+            for item in internal:
+                print(f"    {item['from_account']} -> {item['to_account']}  {item['amount']:.2f}  "
+                      f"({item['from_date']} - {item['to_date']})")
+            print("Downstream Effects:")
+            print("  This will create transfer links between these transactions and adjust their amounts.")
+            print("  Make sure to backup your database before proceeding.")
+
+            confirm_action("Are you sure you want to proceed with auto-linking?", getattr(args, 'yes', False))
+
         result = tm.auto_link_transfers(days_tolerance=args.days, dry_run=args.dry_run)
         internal = result.get("internal", [])
         if not internal:
@@ -992,6 +1010,7 @@ def main():
     p_auto_link = subparsers.add_parser("auto-link", help="Auto-detect internal transfers using transfer rules")
     p_auto_link.add_argument("--days", type=int, default=3, help="Max days apart (default: 3)")
     p_auto_link.add_argument("--dry-run", action="store_true", help="Show what would be linked without making changes")
+    p_auto_link.add_argument("--yes", "-y", action="store_true", help="Bypass confirmation prompt")
     p_auto_link.set_defaults(func=cmd_auto_link)
 
     # transfer-rules
