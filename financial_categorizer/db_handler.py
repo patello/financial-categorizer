@@ -253,6 +253,41 @@ class DatabaseHandler:
 
         self.conn.commit()
 
+        # Check if any tables still have references to "accounts_old" (which occurs if upgraded to bugged v1.1.0)
+        cur.execute("SELECT name, sql FROM sqlite_master WHERE type='table' AND sql LIKE '%accounts_old%'")
+        corrupted_tables = cur.fetchall()
+        if corrupted_tables:
+            self.conn.commit()
+            old_isolation = self.conn.isolation_level
+            self.conn.isolation_level = None
+            try:
+                cur.execute("PRAGMA foreign_keys = OFF;")
+                cur.execute("BEGIN TRANSACTION;")
+                for table_name, old_sql in corrupted_tables:
+                    # Replace references to accounts_old with accounts
+                    new_sql = old_sql.replace('"accounts_old"', 'accounts').replace('accounts_old', 'accounts')
+                    
+                    cur.execute(f"ALTER TABLE {table_name} RENAME TO {table_name}_old;")
+                    cur.execute(new_sql)
+                    
+                    # Copy columns dynamically
+                    cur.execute(f"PRAGMA table_info({table_name}_old)")
+                    cols = [r[1] for r in cur.fetchall()]
+                    cols_str = ", ".join(f'"{c}"' for c in cols)
+                    cur.execute(f"INSERT INTO {table_name} ({cols_str}) SELECT {cols_str} FROM {table_name}_old")
+                    cur.execute(f"DROP TABLE {table_name}_old;")
+                cur.execute("COMMIT;")
+            except Exception as e:
+                try:
+                    cur.execute("ROLLBACK;")
+                except sqlite3.OperationalError:
+                    pass
+                raise e
+            finally:
+                cur.execute("PRAGMA foreign_keys = ON;")
+                self.conn.isolation_level = old_isolation
+            self.conn.commit()
+
         cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
         return [row[0] for row in cur.fetchall()]
 

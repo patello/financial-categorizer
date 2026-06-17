@@ -216,3 +216,174 @@ def test_cli_cash_neutral_and_cashflow(tmp_path, monkeypatch, capsys):
     captured = capsys.readouterr()
     assert "2026-06" in captured.out
     assert "-500.00" in captured.out
+
+
+def test_db_migration_foreign_keys_integrity(tmp_path):
+    # Create database with old schema structure manually, including FK constraints
+    db_file = str(tmp_path / "old_schema_fk.db")
+    conn = sqlite3.connect(db_file)
+    cur = conn.cursor()
+    cur.execute("PRAGMA foreign_keys = ON;")
+    
+    cur.execute("""
+        CREATE TABLE accounts(
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            name            TEXT UNIQUE NOT NULL,
+            type            TEXT NOT NULL DEFAULT 'personal'
+                            CHECK(type IN ('personal','shared','savings','external')),
+            ownership_ratio REAL NOT NULL DEFAULT 1.0
+                            CHECK(ownership_ratio > 0 AND ownership_ratio <= 1.0),
+            currency        TEXT NOT NULL DEFAULT 'SEK',
+            description     TEXT
+        )""")
+    cur.execute("""
+        CREATE TABLE categories(
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            name        TEXT UNIQUE NOT NULL,
+            parent_id   INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+            category_type TEXT NOT NULL DEFAULT 'expense'
+                          CHECK(category_type IN ('income','expense','transfer')),
+            description TEXT
+        )""")
+    cur.execute("""
+        CREATE TABLE transactions(
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            date        DATE NOT NULL,
+            description TEXT NOT NULL,
+            amount      REAL NOT NULL,
+            account_id  INTEGER NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
+            source_file TEXT,
+            imported_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+            comment     TEXT,
+            status      TEXT NOT NULL DEFAULT 'settled'
+                        CHECK(status IN ('pending','settled')),
+            adjusted_amount REAL,
+            UNIQUE(date, description, amount, account_id, status)
+        )""")
+    
+    # Insert some initial data
+    cur.execute("INSERT INTO accounts (id, name, type) VALUES (1, 'Checking', 'personal')")
+    cur.execute("INSERT INTO categories (id, name, category_type) VALUES (1, 'Food', 'expense')")
+    cur.execute("INSERT INTO transactions (date, description, amount, account_id, category_id) VALUES ('2026-06-15', 'ICA', -100.0, 1, 1)")
+    conn.commit()
+    conn.close()
+
+    # Connect using DatabaseHandler, which triggers migration
+    db = DatabaseHandler(db_file)
+    try:
+        # Check that migration converted accounts successfully
+        acct = db.get_account(1)
+        assert acct["type"] == "tracked"
+        assert acct["cash_neutral"] == 0
+
+        # Verify that foreign key constraints on the rebuilt accounts table are completely intact and working.
+        # Try to insert a new transaction referencing account_id = 1.
+        cur = db.get_cursor()
+        cur.execute("PRAGMA foreign_keys = ON;")
+        cur.execute(
+            "INSERT INTO transactions (date, description, amount, account_id, category_id) VALUES (?, ?, ?, ?, ?)",
+            (datetime.date(2026, 6, 16), "Coop", -50.0, 1, 1)
+        )
+        db.commit()
+
+        # Check transaction was inserted successfully
+        cur.execute("SELECT count(*) FROM transactions")
+        assert cur.fetchone()[0] == 2
+    finally:
+        db.disconnect()
+
+
+def test_db_migration_rebuilds_corrupted_v1_1_0_db(tmp_path):
+    # Create a database matching the corrupted v1.1.0 schema:
+    # accounts table has the cash_neutral column, but other tables point to accounts_old
+    db_file = str(tmp_path / "corrupted_v1_1_0.db")
+    conn = sqlite3.connect(db_file)
+    cur = conn.cursor()
+    cur.execute("PRAGMA foreign_keys = OFF;")
+    
+    # Rebuild standard tables except with references pointing to accounts_old (representing the corrupt schema state)
+    cur.execute("""
+        CREATE TABLE accounts(
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            name            TEXT UNIQUE NOT NULL,
+            type            TEXT NOT NULL DEFAULT 'tracked'
+                            CHECK(type IN ('tracked','external')),
+            ownership_ratio REAL NOT NULL DEFAULT 1.0
+                            CHECK(ownership_ratio > 0 AND ownership_ratio <= 1.0),
+            currency        TEXT NOT NULL DEFAULT 'SEK',
+            description     TEXT,
+            cash_neutral    INTEGER NOT NULL DEFAULT 0 CHECK(cash_neutral IN (0, 1))
+        )""")
+        
+    cur.execute("""
+        CREATE TABLE categories(
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            name        TEXT UNIQUE NOT NULL,
+            parent_id   INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+            category_type TEXT NOT NULL DEFAULT 'expense'
+                          CHECK(category_type IN ('income','expense','transfer')),
+            description TEXT,
+            associated_account_id INTEGER REFERENCES accounts_old(id) ON DELETE SET NULL
+        )""")
+        
+    cur.execute("""
+        CREATE TABLE transactions(
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            date        DATE NOT NULL,
+            description TEXT NOT NULL,
+            amount      REAL NOT NULL,
+            account_id  INTEGER NOT NULL REFERENCES accounts_old(id) ON DELETE RESTRICT,
+            source_file TEXT,
+            imported_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+            comment     TEXT,
+            status      TEXT NOT NULL DEFAULT 'settled'
+                        CHECK(status IN ('pending','settled')),
+            adjusted_amount REAL,
+            UNIQUE(date, description, amount, account_id, status)
+        )""")
+        
+    cur.execute("""
+        CREATE TABLE transaction_links(
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            from_transaction_id INTEGER NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+            to_transaction_id   INTEGER REFERENCES transactions(id) ON DELETE CASCADE,
+            link_type           TEXT NOT NULL CHECK(link_type IN ('internal_transfer','external_transfer','reimbursement')),
+            ratio               REAL NOT NULL DEFAULT 1.0
+                                    CHECK(ratio > 0 AND ratio <= 1.0),
+            created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            comment             TEXT,
+            to_account_id       INTEGER REFERENCES accounts_old(id) ON DELETE SET NULL
+        )""")
+
+    # Insert some initial data
+    cur.execute("INSERT INTO accounts (id, name, type, cash_neutral) VALUES (1, 'Checking', 'tracked', 0)")
+    cur.execute("INSERT INTO categories (id, name, category_type, associated_account_id) VALUES (1, 'Food', 'expense', 1)")
+    cur.execute("INSERT INTO transactions (id, date, description, amount, account_id, category_id) VALUES (1, '2026-06-15', 'ICA', -100.0, 1, 1)")
+    cur.execute("INSERT INTO transaction_links (from_transaction_id, link_type, to_account_id) VALUES (1, 'external_transfer', 1)")
+    conn.commit()
+    conn.close()
+
+    # Now instantiate DatabaseHandler, which triggers the self-healing migration
+    db = DatabaseHandler(db_file)
+    try:
+        # Check that we can insert a new transaction referencing account_id = 1 without foreign key errors
+        cur = db.get_cursor()
+        cur.execute("PRAGMA foreign_keys = ON;")
+        cur.execute(
+            "INSERT INTO transactions (date, description, amount, account_id, category_id) VALUES (?, ?, ?, ?, ?)",
+            (datetime.date(2026, 6, 16), "Coop", -50.0, 1, 1)
+        )
+        db.commit()
+
+        # Check transaction was inserted successfully
+        cur.execute("SELECT count(*) FROM transactions")
+        assert cur.fetchone()[0] == 2
+        
+        # Verify that schema SQL no longer contains any reference to accounts_old
+        cur.execute("SELECT sql FROM sqlite_master WHERE type='table' AND sql LIKE '%accounts_old%'")
+        assert len(cur.fetchall()) == 0
+    finally:
+        db.disconnect()
+
