@@ -114,7 +114,8 @@ class DatabaseHandler:
                 parent_id   INTEGER REFERENCES categories(id) ON DELETE SET NULL,
                 category_type TEXT NOT NULL DEFAULT 'expense'
                               CHECK(category_type IN ('income','expense','transfer')),
-                description TEXT
+                description TEXT,
+                associated_account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL
             )""")
 
         cur.execute("""
@@ -179,7 +180,8 @@ class DatabaseHandler:
                 ratio               REAL NOT NULL DEFAULT 1.0
                                     CHECK(ratio > 0 AND ratio <= 1.0),
                 created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                comment             TEXT
+                comment             TEXT,
+                to_account_id       INTEGER REFERENCES accounts(id) ON DELETE SET NULL
             )""")
 
         cur.execute("""
@@ -196,6 +198,19 @@ class DatabaseHandler:
                 key   TEXT PRIMARY KEY,
                 value TEXT
             )""")
+
+        self.conn.commit()
+
+        # Check and migrate schemas dynamically if tables already existed without the new columns
+        cur.execute("PRAGMA table_info(transaction_links)")
+        cols_links = [row[1] for row in cur.fetchall()]
+        if "to_account_id" not in cols_links:
+            cur.execute("ALTER TABLE transaction_links ADD COLUMN to_account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL")
+
+        cur.execute("PRAGMA table_info(categories)")
+        cols_cats = [row[1] for row in cur.fetchall()]
+        if "associated_account_id" not in cols_cats:
+            cur.execute("ALTER TABLE categories ADD COLUMN associated_account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL")
 
         self.conn.commit()
 
@@ -559,6 +574,7 @@ class TransferManager:
         link_type: str,
         ratio: float = 1.0,
         comment: str | None = None,
+        to_account_id: int | None = None,
     ) -> int:
         """Create a link between two transactions. Returns the link id."""
         if link_type not in VALID_LINK_TYPES:
@@ -577,11 +593,15 @@ class TransferManager:
             cur.execute("SELECT id FROM transactions WHERE id = ?", (to_transaction_id,))
             if not cur.fetchone():
                 raise ValueError(f"to_transaction_id {to_transaction_id} not found")
+        if to_account_id is not None:
+            cur.execute("SELECT id FROM accounts WHERE id = ?", (to_account_id,))
+            if not cur.fetchone():
+                raise ValueError(f"to_account_id {to_account_id} not found")
 
         cur.execute(
-            "INSERT INTO transaction_links (from_transaction_id, to_transaction_id, link_type, ratio, comment) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (from_transaction_id, to_transaction_id, link_type, ratio, comment),
+            "INSERT INTO transaction_links (from_transaction_id, to_transaction_id, link_type, ratio, comment, to_account_id) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (from_transaction_id, to_transaction_id, link_type, ratio, comment, to_account_id),
         )
         self.db.commit()
         link_id = cur.lastrowid
@@ -603,7 +623,7 @@ class TransferManager:
         """Get all links involving a transaction."""
         cur = self.db.get_cursor()
         cur.execute(
-            "SELECT id, from_transaction_id, to_transaction_id, link_type, ratio, created_at, comment "
+            "SELECT id, from_transaction_id, to_transaction_id, link_type, ratio, created_at, comment, to_account_id "
             "FROM transaction_links "
             "WHERE from_transaction_id = ? OR to_transaction_id = ?",
             (transaction_id, transaction_id),
@@ -617,6 +637,7 @@ class TransferManager:
                 "ratio": row[4],
                 "created_at": row[5],
                 "comment": row[6],
+                "to_account_id": row[7],
             }
             for row in cur.fetchall()
         ]
@@ -648,7 +669,7 @@ class TransferManager:
 
         cur.execute(
             f"SELECT tl.id, tl.from_transaction_id, tl.to_transaction_id, "
-            f"tl.link_type, tl.ratio, tl.created_at, tl.comment "
+            f"tl.link_type, tl.ratio, tl.created_at, tl.comment, tl.to_account_id "
             f"FROM transaction_links tl "
             f"JOIN transactions t ON t.id = tl.from_transaction_id "
             f"{where} ORDER BY tl.created_at",
@@ -663,6 +684,7 @@ class TransferManager:
                 "ratio": row[4],
                 "created_at": row[5],
                 "comment": row[6],
+                "to_account_id": row[7],
             }
             for row in cur.fetchall()
         ]
