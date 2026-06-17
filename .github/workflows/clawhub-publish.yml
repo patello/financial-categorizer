@@ -52,6 +52,10 @@ jobs:
           echo "Changelog content:"
           cat changelog.txt
 
+      - name: Remove test files before publishing
+        run: |
+          rm -rf tests/ conftest.py .pytest_cache/
+
       - name: Publish to ClawHub
         env:
           CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
