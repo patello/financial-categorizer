@@ -398,3 +398,69 @@ class TestPendingTransactions:
         finally:
             os.unlink(p_path)
             os.unlink(s_path)
+
+    def test_settled_updates_pending_conflict_deletes_pending(self, importer, db):
+        """If updating a pending transaction to settled fails because the settled version
+        already exists, the pending transaction is deleted."""
+        today = date.today().isoformat()
+        pending_csv = (
+            "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
+            "Reserverat;-33,86;1111 11 11111;;;Reservation Kortköp Coop Reimershol;999,99;SEK\n"
+        )
+        settled_csv = (
+            "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
+            f"{today};-33,86;1111 11 11111;;;Kortköp 260409 COOP REIMERSHOLME;999,99;SEK\n"
+        )
+        p_path = _write_csv(pending_csv)
+        s_path = _write_csv(settled_csv)
+        try:
+            # Import pending
+            importer.import_file(p_path, account_name="test")
+            # Import settled first directly (to simulate it already existing in DB)
+            importer.import_file(s_path, account_name="test")
+            
+            # Now let's try to import the settled transaction again.
+            # The pending transaction should be deleted because the settled version already exists.
+            result = importer.import_file(s_path, account_name="test")
+            assert result["settled_pending"] == 0
+            assert result["skipped"] == 1
+            
+            cur = db.get_cursor()
+            cur.execute("SELECT status, COUNT(*) FROM transactions GROUP BY status")
+            counts = dict(cur.fetchall())
+            assert counts.get("pending", 0) == 0
+            assert counts.get("settled", 0) == 1
+        finally:
+            os.unlink(p_path)
+            os.unlink(s_path)
+
+    def test_pending_skipped_if_settled_exists(self, importer, db):
+        """If importing a pending transaction but the settled version already exists,
+        the pending transaction is skipped."""
+        today = date.today().isoformat()
+        settled_csv = (
+            "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
+            f"{today};-33,86;1111 11 11111;;;Kortköp 260409 COOP REIMERSHOLME;999,99;SEK\n"
+        )
+        pending_csv = (
+            "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
+            "Reserverat;-33,86;1111 11 11111;;;Reservation Kortköp Coop Reimershol;999,99;SEK\n"
+        )
+        s_path = _write_csv(settled_csv)
+        p_path = _write_csv(pending_csv)
+        try:
+            # Import settled first
+            importer.import_file(s_path, account_name="test")
+            # Try to import pending next. It should be skipped because the settled version exists.
+            result = importer.import_file(p_path, account_name="test")
+            assert result["imported"] == 0
+            assert result["skipped"] == 1
+            
+            cur = db.get_cursor()
+            cur.execute("SELECT status, COUNT(*) FROM transactions GROUP BY status")
+            counts = dict(cur.fetchall())
+            assert counts.get("pending", 0) == 0
+            assert counts.get("settled", 0) == 1
+        finally:
+            os.unlink(p_path)
+            os.unlink(s_path)

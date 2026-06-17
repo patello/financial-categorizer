@@ -82,6 +82,41 @@ def detect_format(header_row: list[str]) -> str | None:
     return None
 
 
+def _has_matching_settled(cur, account_id: int, pending_date: datetime.date, pending_desc: str, pending_amount: float) -> bool:
+    """Check if a matching settled transaction already exists in the database."""
+    cur.execute(
+        "SELECT date, description, amount FROM transactions "
+        "WHERE account_id = ? AND status = 'settled'",
+        (account_id,),
+    )
+    settled_candidates = cur.fetchall()
+    
+    pending_desc_clean = clean_description(pending_desc)
+    
+    for s_date, s_desc, s_amount in settled_candidates:
+        # 1. Description substring match
+        s_desc_clean = clean_description(s_desc)
+        if not (pending_desc_clean in s_desc_clean or s_desc_clean in pending_desc_clean):
+            continue
+        
+        # 2. Date window match (settled date within 10 days after pending date)
+        s_dt = datetime.date.fromisoformat(s_date) if isinstance(s_date, str) else s_date
+        p_dt = datetime.date.fromisoformat(pending_date) if isinstance(pending_date, str) else pending_date
+        days_diff = (s_dt - p_dt).days
+        if not (0 <= days_diff <= 10):
+            continue
+            
+        # 3. Amount tolerance match (same sign, within 1.0 SEK difference)
+        if (s_amount < 0) != (pending_amount < 0):
+            continue
+        if abs(s_amount - pending_amount) > 1.0:
+            continue
+            
+        return True
+        
+    return False
+
+
 class CSVImporter:
     """Imports bank CSV files into the transactions table."""
 
@@ -191,15 +226,31 @@ class CSVImporter:
                         break  # Pick the first matching candidate
                     
                     if matched_pending_id is not None:
+                        # Pre-check: Check if the settled version already exists in the database.
                         cur.execute(
-                            "UPDATE transactions SET date = ?, description = ?, amount = ?, "
-                            "adjusted_amount = ? * "
-                            "(SELECT ownership_ratio FROM accounts WHERE accounts.id = account_id), "
-                            "status = 'settled', source_file = ? WHERE id = ?",
-                            (txn_date, description, amount, amount, file_path, matched_pending_id),
+                            "SELECT id FROM transactions "
+                            "WHERE date = ? AND description = ? AND amount = ? AND account_id = ? AND status = 'settled'",
+                            (txn_date, description, amount, account_id),
                         )
-                        settled_pending += 1
-                        imported += 1
+                        if cur.fetchone() is not None:
+                            # The settled version already exists. We can safely delete the ghost pending transaction.
+                            cur.execute("DELETE FROM transactions WHERE id = ?", (matched_pending_id,))
+                            skipped += 1
+                        else:
+                            cur.execute(
+                                "UPDATE transactions SET date = ?, description = ?, amount = ?, "
+                                "adjusted_amount = ? * "
+                                "(SELECT ownership_ratio FROM accounts WHERE accounts.id = account_id), "
+                                "status = 'settled', source_file = ? WHERE id = ?",
+                                (txn_date, description, amount, amount, file_path, matched_pending_id),
+                            )
+                            settled_pending += 1
+                            imported += 1
+                        continue
+
+                if status == "pending":
+                    if _has_matching_settled(cur, account_id, txn_date, description, amount):
+                        skipped += 1
                         continue
 
                 try:
