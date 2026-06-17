@@ -816,6 +816,56 @@ def cmd_stats_compare(args):
         db.disconnect()
 
 
+def cmd_salary_config(args):
+    db = get_db(args.db)
+    try:
+        mode = db.get_metadata("salary_period_mode", "fixed")
+        day = db.get_metadata("salary_period_fixed_day", "25")
+        category = db.get_metadata("salary_period_category_name", "Salary")
+        print("Salary Period Configuration:")
+        print(f"  Mode:            {mode}")
+        print(f"  Fixed Day:       {day}")
+        print(f"  Salary Category: {category}")
+    finally:
+        db.disconnect()
+
+
+def cmd_set_salary_mode(args):
+    db = get_db(args.db)
+    try:
+        db.set_metadata("salary_period_mode", args.mode)
+        from financial_categorizer.stats import Stats
+        Stats(db)
+        print(f"Salary period mode set to: {args.mode}")
+    finally:
+        db.disconnect()
+
+
+def cmd_set_salary_day(args):
+    db = get_db(args.db)
+    try:
+        if args.day < 1 or args.day > 28:
+            print("Error: day must be between 1 and 28")
+            sys.exit(1)
+        db.set_metadata("salary_period_fixed_day", str(args.day))
+        from financial_categorizer.stats import Stats
+        Stats(db)
+        print(f"Salary period fixed day set to: {args.day}")
+    finally:
+        db.disconnect()
+
+
+def cmd_set_salary_category(args):
+    db = get_db(args.db)
+    try:
+        db.set_metadata("salary_period_category_name", args.category)
+        from financial_categorizer.stats import Stats
+        Stats(db)
+        print(f"Salary period category set to: {args.category}")
+    finally:
+        db.disconnect()
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="financial-categorizer",
@@ -1034,8 +1084,28 @@ def main():
     p_compare = subparsers.add_parser("stats-compare", help="Month-over-month comparison")
     p_compare.add_argument("--month", help="Period to compare (YYYY-MM, default: latest)")
     p_compare.add_argument("--period-type", choices=["calendar", "salary"], default="calendar",
-                          help="Period type: calendar (1st-last) or salary (25th-24th)")
+                          help="Period type: calendar (1st-last) or salary (based on active salary config: fixed or salary)")
     p_compare.set_defaults(func=cmd_stats_compare)
+
+    # salary-config
+    p_sal_cfg = subparsers.add_parser("salary-config", help="Show current salary period configuration")
+    p_sal_cfg.set_defaults(func=cmd_salary_config)
+
+    # set-salary-mode
+    p_set_mode = subparsers.add_parser("set-salary-mode", help="Set the salary period mode")
+    p_set_mode.add_argument("mode", choices=["calendar", "fixed", "salary"],
+                            help="Mode: calendar (1st-last), fixed (fixed day boundary), salary (auto payday-based)")
+    p_set_mode.set_defaults(func=cmd_set_salary_mode)
+
+    # set-salary-day
+    p_set_day = subparsers.add_parser("set-salary-day", help="Set the fixed boundary day of the month")
+    p_set_day.add_argument("day", type=int, help="Fixed day of the month (1-28)")
+    p_set_day.set_defaults(func=cmd_set_salary_day)
+
+    # set-salary-category
+    p_set_cat = subparsers.add_parser("set-salary-category", help="Set the category name used to scan for salary paydays")
+    p_set_cat.add_argument("category", help="Salary category name (default: Salary)")
+    p_set_cat.set_defaults(func=cmd_set_salary_category)
 
     args = parser.parse_args()
     if not args.command:

@@ -133,17 +133,61 @@ class Stats:
             GROUP BY category_id
         """)
 
+        cur.execute("DROP VIEW IF EXISTS v_salary_periods")
+        cur.execute("DROP VIEW IF EXISTS v_salary_period_summary")
+
         cur.execute("""
-            CREATE VIEW IF NOT EXISTS v_salary_period_summary AS
+            CREATE VIEW v_salary_periods AS
+            WITH settings AS (
+                SELECT 
+                    COALESCE((SELECT value FROM metadata WHERE key = 'salary_period_mode'), 'fixed') AS mode,
+                    COALESCE((SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'salary_period_fixed_day'), 25) AS fixed_day,
+                    COALESCE((SELECT value FROM metadata WHERE key = 'salary_period_category_name'), 'Salary') AS salary_cat_name
+            ),
+            primary_salary_dates AS (
+                SELECT date
+                FROM (
+                    SELECT 
+                        t.date,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY strftime('%Y-%m', t.date) 
+                            ORDER BY t.amount DESC, t.date ASC
+                        ) AS rank
+                    FROM transactions t
+                    JOIN categories c ON t.category_id = c.id
+                    WHERE c.name = (SELECT salary_cat_name FROM settings)
+                      AND t.amount > 0
+                )
+                WHERE rank = 1
+            )
+            SELECT 
+                t.id AS transaction_id,
+                t.date,
+                CASE 
+                    WHEN (SELECT mode FROM settings) = 'salary' THEN
+                        strftime('%Y-%m', COALESCE(
+                            (SELECT MAX(s.date) FROM primary_salary_dates s WHERE s.date <= t.date),
+                            t.date
+                        ))
+                    ELSE
+                        CASE 
+                            WHEN CAST(strftime('%d', t.date) AS INTEGER) >= (SELECT fixed_day FROM settings)
+                                THEN strftime('%Y-%m', date(t.date, 'start of month', '+1 month'))
+                            ELSE strftime('%Y-%m', t.date)
+                        END
+                END AS period
+            FROM transactions t
+        """)
+
+        cur.execute("""
+            CREATE VIEW v_salary_period_summary AS
             WITH txn_with_period AS (
                 SELECT
                     t.adjusted_amount,
                     COALESCE(c.category_type, 'expense') AS category_type,
-                    CASE
-                        WHEN strftime('%d', t.date) >= '25' THEN strftime('%Y-%m', date(t.date, 'start of month', '+1 month'))
-                        ELSE strftime('%Y-%m', t.date)
-                    END AS period
+                    p.period
                 FROM transactions t
+                JOIN v_salary_periods p ON t.id = p.transaction_id
                 JOIN accounts a ON a.id = t.account_id
                 LEFT JOIN categories c ON c.id = t.category_id
                 WHERE t.adjusted_amount IS NOT NULL AND COALESCE(c.category_type, 'expense') != 'transfer'

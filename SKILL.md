@@ -110,6 +110,40 @@ The following commands require confirmation:
 | `recalculate` | Manually recalculate adjusted amounts for all transactions |
 | `db-cleanup [--dry-run] [--yes]` | Purge orphaned transaction links and rules (Integrity Cleanup) (requires confirmation or `-y` when not running dry-run) |
 | `remove-transfer-rule <id> [--yes]` | Remove a transfer detection rule (requires confirmation or `-y`) |
+| `salary-config` | Show current salary period configuration |
+| `set-salary-mode <mode>` | Set the salary period mode (`calendar`, `fixed`, `salary`) |
+| `set-salary-day <day>` | Set the fixed boundary day of the month (1-28) |
+| `set-salary-category <name>` | Set the category name used to scan for salary paydays |
+
+## Configuring Salary Periods
+
+By default, the salary period boundary is fixed to the 25th of the month. You can customize this grouping behavior using the salary configuration commands.
+
+### Available Modes:
+1. **`calendar`**: Group transactions by calendar months (1st to the last day).
+2. **`fixed`**: Group transactions by a static day of the month (e.g., the 25th). Transactions on or after this day are grouped into the next month's period.
+3. **`salary`**: Group transactions by automatically detecting the primary salary deposit date in each month (the transaction under the salary category with the largest positive amount).
+
+### CLI Configuration Commands:
+```bash
+# View current configuration
+python cli.py salary-config
+
+# Change mode to salary (automatic payday detection)
+python cli.py set-salary-mode salary
+
+# Set the category name used to search for paydays (default is "Salary")
+python cli.py set-salary-category "Salary"
+
+# Change mode to a fixed day of the month (e.g. 27th)
+python cli.py set-salary-mode fixed
+python cli.py set-salary-day 27
+```
+
+> [!WARNING]
+> If you choose the **`fixed`** day mode, be aware that bank deposits and transactions can shift early or late due to weekends and holidays.
+> - Ensure your fixed day is configured early or late enough so that fluctuations in actual payday do not cause two salary deposits to fall into the same period (which would result in one month showing double income and the next showing zero income).
+> - Alternatively, use the **`salary`** mode, which automatically detects the actual deposit transaction dates and shifts the boundaries dynamically.
 
 ## Skill Contents
 
@@ -138,7 +172,7 @@ This skill utilizes a dynamic database schema. Analytical SQL views are register
 5. **`v_cumulative_spending_monthly`** — Running month-to-date daily cumulative spending.
 6. **`v_daily_spending_moving_average`** — 30-day moving average of daily spending.
 7. **`v_category_monthly_averages`** — Average monthly spending by category.
-8. **`v_salary_period_summary`** — Expense/income summary grouped by salary periods (25th to 24th).
+8. **`v_salary_period_summary`** — Expense/income summary grouped by salary periods (using the active salary config: fixed or salary).
 9. **`v_breakout_categories`** — Groups monthly spending into high-level categories (Groceries, Loans, Housing, Leisure, Car, etc.).
 10. **`v_uncategorized_groups`** — Groups uncategorized transactions by normalized Swish/Card payment descriptions to identify potential new rules.
 

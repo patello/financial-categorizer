@@ -138,3 +138,87 @@ class TestCompareEdgeCases:
         result = stats.compare(period="2026-02", period_type="calendar")
         # The -5000 savings transfer should NOT affect expenses
         assert result["total_expenses"] == -14000.0  # same as without transfer
+
+
+class TestConfigureSalary:
+    def test_salary_period_mode_fixed_custom_day(self, db):
+        """Test fixed mode with a custom boundary day."""
+        db.set_metadata("salary_period_mode", "fixed")
+        db.set_metadata("salary_period_fixed_day", "20")
+        
+        # Insert test transactions around the 20th boundary
+        cur = db.get_cursor()
+        cur.execute("INSERT INTO transactions (account_id, date, amount, adjusted_amount, category_id, description) "
+                    "VALUES (1, '2026-01-19', -100, -100, 2, 'Groceries')")
+        cur.execute("INSERT INTO transactions (account_id, date, amount, adjusted_amount, category_id, description) "
+                    "VALUES (1, '2026-01-20', -200, -200, 2, 'Groceries')")
+        db.commit()
+        
+        stats = Stats(db)
+        # Period 2026-02 should start on Jan 20th and end on Feb 19th
+        all_periods = stats._salary_period_summary(db.get_cursor())
+        feb_period = next(p for p in all_periods if p["period"] == "2026-02")
+        # Jan 20 transaction (-200) should be included, Jan 19 transaction (-100) should NOT (it belongs to 2026-01)
+        # We also have Feb 10 groceries (-6000) and Feb 15 rent (-8000) in the fixture, which are part of 2026-02 period.
+        # Total expenses in 2026-02 should be -200 + (-6000) + (-8000) = -14200.0
+        assert feb_period["total_expenses"] == pytest.approx(-14200.0)
+
+    def test_salary_period_mode_salary_auto(self, db):
+        """Test salary mode (auto payday-based boundary)."""
+        db.set_metadata("salary_period_mode", "salary")
+        db.set_metadata("salary_period_category_name", "Salary")
+        
+        # Insert a preceding salary in Dec to establish the previous period boundary
+        cur = db.get_cursor()
+        cur.execute("INSERT INTO transactions (account_id, date, amount, adjusted_amount, category_id, description) "
+                    "VALUES (1, '2025-12-25', 30000, 30000, 1, 'Salary')")
+        
+        # In the fixture:
+        # Jan salary is on 2026-01-05
+        # Feb salary is on 2026-02-05
+        # So period 2026-01 (Jan salary period) spans 2026-01-05 to 2026-02-04.
+        
+        # Let's add a transaction on Jan 4 (before Jan salary - should fall into Dec period)
+        # and on Feb 4 (before Feb salary - should fall into Jan period)
+        cur.execute("INSERT INTO transactions (account_id, date, amount, adjusted_amount, category_id, description) "
+                    "VALUES (1, '2026-01-04', -100, -100, 2, 'Groceries')")
+        cur.execute("INSERT INTO transactions (account_id, date, amount, adjusted_amount, category_id, description) "
+                    "VALUES (1, '2026-02-04', -200, -200, 2, 'Groceries')")
+        db.commit()
+        
+        stats = Stats(db)
+        all_periods = stats._salary_period_summary(db.get_cursor())
+        
+        # Find 2026-01 period (the one starting Jan 5)
+        jan_period = next(p for p in all_periods if p["period"] == "2026-01")
+        # Should contain: Feb 4 transaction (-200), plus fixture's Jan 10 groceries (-5000) and Jan 15 rent (-8000).
+        # Jan 4 transaction should NOT be in this period (belongs to 2025-12).
+        assert jan_period["total_expenses"] == pytest.approx(-13200.0)
+
+    def test_salary_period_mode_salary_multiple_in_month(self, db):
+        """Test salary mode when multiple salary transactions exist in the same month (uses primary/largest)."""
+        db.set_metadata("salary_period_mode", "salary")
+        
+        cur = db.get_cursor()
+        # Insert preceding salary in Dec
+        cur.execute("INSERT INTO transactions (account_id, date, amount, adjusted_amount, category_id, description) "
+                    "VALUES (1, '2025-12-25', 30000, 30000, 1, 'Salary')")
+        
+        # Add a secondary/smaller salary on Jan 2nd (e.g. 500 SEK side income)
+        # The main salary is 30,000 SEK on Jan 5th.
+        cur.execute("INSERT INTO transactions (account_id, date, amount, adjusted_amount, category_id, description) "
+                    "VALUES (1, '2026-01-02', 500, 500, 1, 'Salary')")
+        # Add a transaction on Jan 3rd
+        cur.execute("INSERT INTO transactions (account_id, date, amount, adjusted_amount, category_id, description) "
+                    "VALUES (1, '2026-01-03', -100, -100, 2, 'Groceries')")
+        db.commit()
+        
+        stats = Stats(db)
+        all_periods = stats._salary_period_summary(db.get_cursor())
+        
+        # Since Jan 5 is the largest salary, it should be the primary salary date for January.
+        # This means Jan 3 is *before* the primary salary date (Jan 5), so it falls into the previous period (2025-12).
+        # Jan 10 (-5000) and Jan 15 (-8000) are *after* Jan 5, so they belong to the Jan 5 period (labeled 2026-01).
+        jan_period = next(p for p in all_periods if p["period"] == "2026-01")
+        # Should include Jan 10 and Jan 15, but NOT Jan 3
+        assert jan_period["total_expenses"] == pytest.approx(-13000.0)
