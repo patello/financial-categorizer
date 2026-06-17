@@ -173,12 +173,14 @@ If you make a shared purchase (e.g., from the `Gemensamt` account, 50% ownership
    python cli.py --db data/finance.db link <swish_transaction_id> <expense_transaction_id> --type reimbursement --ratio 1.0
    ```
    * *Effect*: The Swish transaction is fully neutralized to `0.00` adjusted amount, and the credit to the expense transaction is automatically scaled by the shared account's ownership ratio (e.g., 50%), reducing your net cost correctly.
+   * *Note*: The credit is scaled by the target account's ownership ratio (e.g., 50%) because the benefit of the payback is shared between the joint account owners.
 
 2. **Link the account transfer**: Link the outflow from your main account to the inflow on your joint account as an internal transfer:
    ```bash
    python cli.py --db data/finance.db link <transfer_out_id> <transfer_in_id> --type internal_transfer
    ```
    * *Effect*: Both sides of the transfer are neutralized to `0.00`, ensuring no false income or outflows are recorded.
+   * *Note*: This step is skipped if the transfer has already been auto-linked.
 
 ## Tracking External Accounts
 
