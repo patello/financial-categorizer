@@ -388,13 +388,26 @@ class DatabaseHandler:
             if link_type == "external_transfer":
                 adjustments[from_id] = "ZERO"  # marker to set to 0
             elif link_type == "reimbursement":
-                # from side (reimbursement): neutralize to 0
-                cur.execute("SELECT adjusted_amount FROM transactions WHERE id = ?", (from_id,))
-                from_adj = cur.fetchone()[0]
-                adjustments[from_id] = adjustments.get(from_id, 0) - from_adj * ratio
-                # to side (original expense): credit by the reimb amount
+                # Get raw amount and ownership ratio for the reimbursement transaction
+                cur.execute(
+                    "SELECT t.amount, a.ownership_ratio FROM transactions t "
+                    "JOIN accounts a ON t.account_id = a.id WHERE t.id = ?",
+                    (from_id,)
+                )
+                from_amount, from_ratio = cur.fetchone()
+                
+                # Neutralize the reimbursement side completely (scaled by ratio)
+                adjustments[from_id] = adjustments.get(from_id, 0) - (from_amount * from_ratio * ratio)
+                
+                # Credit the original expense transaction, scaled by the target account's ownership ratio
                 if to_id is not None:
-                    adjustments[to_id] = adjustments.get(to_id, 0) + from_adj * ratio
+                    cur.execute(
+                        "SELECT a.ownership_ratio FROM transactions t "
+                        "JOIN accounts a ON t.account_id = a.id WHERE t.id = ?",
+                        (to_id,)
+                    )
+                    to_ratio = cur.fetchone()[0]
+                    adjustments[to_id] = adjustments.get(to_id, 0) + (from_amount * to_ratio * ratio)
             elif link_type == "internal_transfer":
                 # Both sides neutralize to 0
                 cur.execute("SELECT adjusted_amount FROM transactions WHERE id = ?", (from_id,))
