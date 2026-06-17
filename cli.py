@@ -401,7 +401,8 @@ def cmd_accounts(args):
             return
         for a in accounts:
             print(f"  [{a['id']}] {a['name']:<20} type={a['type']:<10} "
-                  f"ownership={a['ownership_ratio']:.2f}  {a['currency']}"
+                  f"ownership={a['ownership_ratio']:.2f}  {a['currency']}  "
+                  f"cash_neutral={a['cash_neutral']}"
                   f"{('  ' + a['description']) if a['description'] else ''}")
     finally:
         db.disconnect()
@@ -415,6 +416,7 @@ def cmd_add_account(args):
             ownership_ratio=args.ownership,
             currency=args.currency,
             description=args.description,
+            cash_neutral=args.cash_neutral,
         )
         print(f"Created account '{args.name}' (id={aid})")
     finally:
@@ -435,6 +437,8 @@ def cmd_update_account(args):
             kwargs["currency"] = args.currency
         if args.description is not None:
             kwargs["description"] = args.description
+        if args.cash_neutral is not None:
+            kwargs["cash_neutral"] = args.cash_neutral
         if not kwargs:
             print("Nothing to update.")
             return
@@ -462,6 +466,7 @@ def cmd_delete_account(args):
         print(f"  Type: {acct['type']}")
         print(f"  Ownership Ratio: {acct['ownership_ratio']}")
         print(f"  Currency: {acct['currency']}")
+        print(f"  Cash Neutral: {acct['cash_neutral']}")
         if acct['description']:
             print(f"  Description: {acct['description']}")
 
@@ -942,6 +947,33 @@ def cmd_set_salary_category(args):
         db.disconnect()
 
 
+def parse_cash_neutral(value):
+    if value.lower() in ("true", "1", "yes"):
+        return 1
+    if value.lower() in ("false", "0", "no"):
+        return 0
+    raise argparse.ArgumentTypeError("Boolean-like value expected (1/0, true/false, yes/no).")
+
+
+def cmd_stats_cashflow(args):
+    db = get_db(args.db)
+    try:
+        pt = resolve_period_type(db, args.period_type)
+        stats = Stats(db)
+        rows = stats.cash_flow_summary(month=args.month, period_type=pt)
+        if not rows:
+            print("No data found.")
+            return
+        
+        header_period = "Period" if pt == "salary" else "Month"
+        print(f"{header_period:<10}  {'Operating':>12}  {'Transfers':>12}  {'Net':>12}")
+        print("-" * 54)
+        for r in rows:
+            print(f"{r['period']:<10}  {r['operating']:>12.2f}  {r['transfers']:>12.2f}  {r['net']:>12.2f}")
+    finally:
+        db.disconnect()
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="financial-categorizer",
@@ -966,24 +998,28 @@ def main():
     # add-account
     p_add_acct = subparsers.add_parser("add-account", help="Add a new account")
     p_add_acct.add_argument("name", help="Account name")
-    p_add_acct.add_argument("--type", default="personal",
-                            choices=["personal", "shared", "savings", "external"],
-                            help="Account type: personal (100%% yours), shared (split ownership), savings, external (default: personal)")
+    p_add_acct.add_argument("--type", default="tracked",
+                            choices=["tracked", "external"],
+                            help="Account type: tracked (active bank account), external (savings/investment) (default: tracked)")
     p_add_acct.add_argument("--ownership", type=float, default=1.0,
                             help="Ownership ratio 0.0-1.0 (default: 1.0)")
     p_add_acct.add_argument("--currency", default="SEK", help="Currency (default: SEK)")
     p_add_acct.add_argument("--description", help="Account description")
+    p_add_acct.add_argument("--cash-neutral", type=parse_cash_neutral, default=0,
+                            help="Set as cash neutral transfer destination (choices: 1/0 or true/false, default: false)")
     p_add_acct.set_defaults(func=cmd_add_account)
 
     # update-account
     p_upd_acct = subparsers.add_parser("update-account", help="Update an account")
     p_upd_acct.add_argument("id", type=int, help="Account ID")
     p_upd_acct.add_argument("--name", help="New name")
-    p_upd_acct.add_argument("--type", choices=["personal", "shared", "savings", "external"],
+    p_upd_acct.add_argument("--type", choices=["tracked", "external"],
                             help="New type")
     p_upd_acct.add_argument("--ownership", type=float, help="New ownership ratio")
     p_upd_acct.add_argument("--currency", help="New currency")
     p_upd_acct.add_argument("--description", help="New description")
+    p_upd_acct.add_argument("--cash-neutral", type=parse_cash_neutral,
+                            help="Update cash neutral flag (choices: 1/0 or true/false)")
     p_upd_acct.set_defaults(func=cmd_update_account)
 
     # delete-account
@@ -1200,6 +1236,13 @@ def main():
     p_set_cat = subparsers.add_parser("set-salary-category", help="Set the category name used to scan for salary paydays")
     p_set_cat.add_argument("category", help="Salary category name (default: Salary)")
     p_set_cat.set_defaults(func=cmd_set_salary_category)
+
+    # stats-cashflow
+    p_cf = subparsers.add_parser("stats-cashflow", help="Show monthly cash flow (Operating, Transfers, Net)")
+    p_cf.add_argument("--month", help="Specific month (YYYY-MM)")
+    p_cf.add_argument("--period-type", choices=["calendar", "salary", "default"], default="default",
+                      help="Period type: calendar, salary, or default (dynamically determined by active salary config)")
+    p_cf.set_defaults(func=cmd_stats_cashflow)
 
     args = parser.parse_args()
     if not args.command:

@@ -12,8 +12,8 @@ Process bank transaction CSV exports, auto-categorize transactions using configu
 Run the CLI tool from your terminal pointing to your database path:
 
 ```bash
-# 1. Add your personal checking account
-python cli.py --db ../data/finance.db add-account "Nordea Checking" --type personal --ownership 1.0
+# 1. Add your main checking account
+python cli.py --db ../data/finance.db add-account "Nordea Checking" --type tracked --ownership 1.0
 
 # 2. Add hierarchical categories
 python cli.py --db ../data/finance.db add-category "Food"
@@ -103,7 +103,8 @@ The following commands require confirmation:
 | `stats-category <name> [--period-type <type>]` | Category total with subcategory rollups |
 | `stats-trend <name> [--period-type <type>]` | Monthly trend for a category |
 | `stats-top [--period-type <type>]` | Top spending categories sorted by total expenses |
-| `stats-transfers [--month <YYYY-MM>] [--period-type <type>]` | Net capital transfers to external/savings accounts |
+| `stats-transfers [--month <YYYY-MM>] [--period-type <type>]` | Net capital transfers to external accounts |
+| `stats-cashflow [--month <YYYY-MM>] [--period-type <type>]` | Monthly cash flow summary (Operating, Transfers, Net) |
 | `link <from_id> [to_id] --type [--to-account <name_or_id>]` | Link transactions (specify `--to-account` for external transfers) |
 | `unlink <id> [--yes]` | Remove a link (requires confirmation or `-y`) |
 | `links` | List all transaction links |
@@ -173,7 +174,7 @@ If you make a shared purchase (e.g., from the `Gemensamt` account, 50% ownership
    ```
    * *Effect*: The Swish transaction is fully neutralized to `0.00` adjusted amount, and the credit to the expense transaction is automatically scaled by the shared account's ownership ratio (e.g., 50%), reducing your net cost correctly.
 
-2. **Link the account transfer**: Link the outflow from your personal account to the inflow on your shared account as an internal transfer:
+2. **Link the account transfer**: Link the outflow from your main account to the inflow on your joint account as an internal transfer:
    ```bash
    python cli.py --db data/finance.db link <transfer_out_id> <transfer_in_id> --type internal_transfer
    ```
@@ -181,7 +182,7 @@ If you make a shared purchase (e.g., from the `Gemensamt` account, 50% ownership
 
 ## Tracking External Accounts
 
-You can track capital transfers from your main accounts to untracked external accounts (such as savings or stock brokerage accounts).
+You can track capital transfers from your tracked accounts to untracked external accounts (such as savings or stock brokerage accounts).
 
 ### Setup and Workflow:
 1. **Create the External Account**:

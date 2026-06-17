@@ -207,7 +207,7 @@ class TestAccountName:
             importer.import_file(path, account_name="auto_account")
             acct = db.get_account_by_name("auto_account")
             assert acct is not None
-            assert acct["type"] == "personal"
+            assert acct["type"] == "tracked"
         finally:
             os.unlink(path)
 

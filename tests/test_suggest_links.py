@@ -13,8 +13,8 @@ def db(tmp_path):
     """Create a fresh DatabaseHandler with two accounts and sample transactions."""
     handler = DatabaseHandler(str(tmp_path / "test.db"))
     # Two accounts
-    handler.add_account("Checking", type="personal", ownership_ratio=1.0)
-    handler.add_account("Savings", type="savings", ownership_ratio=1.0)
+    handler.add_account("Checking", type="tracked", ownership_ratio=1.0)
+    handler.add_account("Savings", type="external", ownership_ratio=1.0)
 
     cur = handler.get_cursor()
     # Matching pair: -5000 out of checking, +5000 into savings, same day

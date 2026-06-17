@@ -19,8 +19,21 @@ class Stats:
         """Create or replace SQL views."""
         cur = self.db.get_cursor()
 
+        cur.execute("DROP VIEW IF EXISTS v_effective_transactions")
+        cur.execute("DROP VIEW IF EXISTS v_monthly_summary")
+        cur.execute("DROP VIEW IF EXISTS v_category_monthly")
+        cur.execute("DROP VIEW IF EXISTS v_daily_spending")
+        cur.execute("DROP VIEW IF EXISTS v_cumulative_spending_monthly")
+        cur.execute("DROP VIEW IF EXISTS v_daily_spending_moving_average")
+        cur.execute("DROP VIEW IF EXISTS v_category_monthly_averages")
+        cur.execute("DROP VIEW IF EXISTS v_salary_periods")
+        cur.execute("DROP VIEW IF EXISTS v_salary_period_summary")
+        cur.execute("DROP VIEW IF EXISTS v_category_salary_period")
+        cur.execute("DROP VIEW IF EXISTS v_breakout_categories")
+        cur.execute("DROP VIEW IF EXISTS v_uncategorized_groups")
+
         cur.execute("""
-            CREATE VIEW IF NOT EXISTS v_effective_transactions AS
+            CREATE VIEW v_effective_transactions AS
             SELECT t.id, t.date, t.description, t.amount, t.adjusted_amount,
                    t.account_id, t.category_id, t.status, t.comment,
                    a.name AS account_name, a.type AS account_type,
@@ -29,11 +42,11 @@ class Stats:
             FROM transactions t
             JOIN accounts a ON a.id = t.account_id
             LEFT JOIN categories c ON c.id = t.category_id
-            WHERE t.adjusted_amount IS NOT NULL
+            WHERE t.adjusted_amount IS NOT NULL AND a.type = 'tracked'
         """)
 
         cur.execute("""
-            CREATE VIEW IF NOT EXISTS v_monthly_summary AS
+            CREATE VIEW v_monthly_summary AS
             SELECT strftime('%Y-%m', date) AS month,
                    ROUND(SUM(CASE WHEN adjusted_amount > 0 AND category_type != 'transfer' THEN adjusted_amount ELSE 0 END), 2) AS total_income,
                    ROUND(SUM(CASE WHEN adjusted_amount < 0 AND category_type != 'transfer' THEN adjusted_amount ELSE 0 END), 2) AS total_expenses,
@@ -44,7 +57,7 @@ class Stats:
         """)
 
         cur.execute("""
-            CREATE VIEW IF NOT EXISTS v_category_monthly AS
+            CREATE VIEW v_category_monthly AS
             SELECT COALESCE(c.name, 'Uncategorized') AS category_name,
                    t.category_id,
                    COALESCE(c.category_type, 'expense') AS category_type,
@@ -52,33 +65,38 @@ class Stats:
                    ROUND(SUM(t.adjusted_amount), 2) AS total,
                    COUNT(*) AS count
             FROM transactions t
+            JOIN accounts a ON a.id = t.account_id
             LEFT JOIN categories c ON c.id = t.category_id
-            WHERE t.adjusted_amount IS NOT NULL
+            WHERE t.adjusted_amount IS NOT NULL AND a.type = 'tracked'
             GROUP BY strftime('%Y-%m', t.date), t.category_id
             ORDER BY month, category_name
         """)
 
         cur.execute("""
-            CREATE VIEW IF NOT EXISTS v_daily_spending AS
+            CREATE VIEW v_daily_spending AS
             SELECT date, adjusted_amount, COALESCE(c.name, 'Uncategorized') AS category_name,
                    COALESCE(c.category_type, 'expense') AS category_type
             FROM transactions t
+            JOIN accounts a ON a.id = t.account_id
             LEFT JOIN categories c ON c.id = t.category_id
             WHERE adjusted_amount IS NOT NULL AND adjusted_amount < 0
+              AND a.type = 'tracked'
             ORDER BY date
         """)
 
         cur.execute("""
-            CREATE VIEW IF NOT EXISTS v_cumulative_spending_monthly AS
+            CREATE VIEW v_cumulative_spending_monthly AS
             WITH daily_spending AS (
                 SELECT
                     date,
                     strftime('%Y-%m', date) AS month,
                     ROUND(SUM(adjusted_amount), 2) AS daily_amount
                 FROM transactions t
+                JOIN accounts a ON a.id = t.account_id
                 LEFT JOIN categories c ON c.id = t.category_id
                 WHERE adjusted_amount IS NOT NULL AND adjusted_amount < 0
                   AND (category_id IS NULL OR COALESCE(c.category_type, 'expense') != 'transfer')
+                  AND a.type = 'tracked'
                 GROUP BY date
             )
             SELECT
@@ -94,7 +112,7 @@ class Stats:
         """)
 
         cur.execute("""
-            CREATE VIEW IF NOT EXISTS v_daily_spending_moving_average AS
+            CREATE VIEW v_daily_spending_moving_average AS
             WITH RECURSIVE date_range(date) AS (
                 SELECT MIN(date) FROM transactions WHERE date IS NOT NULL
                 UNION ALL
@@ -105,9 +123,11 @@ class Stats:
                     date,
                     SUM(adjusted_amount) AS daily_amount
                 FROM transactions t
+                JOIN accounts a ON a.id = t.account_id
                 LEFT JOIN categories c ON c.id = t.category_id
                 WHERE adjusted_amount IS NOT NULL AND adjusted_amount < 0
                   AND (category_id IS NULL OR COALESCE(c.category_type, 'expense') != 'transfer')
+                  AND a.type = 'tracked'
                 GROUP BY date
             )
             SELECT
@@ -122,7 +142,7 @@ class Stats:
         """)
 
         cur.execute("""
-            CREATE VIEW IF NOT EXISTS v_category_monthly_averages AS
+            CREATE VIEW v_category_monthly_averages AS
             SELECT
                 category_name,
                 category_id,
@@ -132,9 +152,6 @@ class Stats:
             FROM v_category_monthly
             GROUP BY category_id
         """)
-
-        cur.execute("DROP VIEW IF EXISTS v_salary_periods")
-        cur.execute("DROP VIEW IF EXISTS v_salary_period_summary")
 
         cur.execute("""
             CREATE VIEW v_salary_periods AS
@@ -155,8 +172,10 @@ class Stats:
                         ) AS rank
                     FROM transactions t
                     JOIN categories c ON t.category_id = c.id
+                    JOIN accounts a ON t.account_id = a.id
                     WHERE c.name = (SELECT salary_cat_name FROM settings)
                       AND t.amount > 0
+                      AND a.type = 'tracked'
                 )
                 WHERE rank = 1
             )
@@ -190,7 +209,9 @@ class Stats:
                 JOIN v_salary_periods p ON t.id = p.transaction_id
                 JOIN accounts a ON a.id = t.account_id
                 LEFT JOIN categories c ON c.id = t.category_id
-                WHERE t.adjusted_amount IS NOT NULL AND COALESCE(c.category_type, 'expense') != 'transfer'
+                WHERE t.adjusted_amount IS NOT NULL 
+                  AND COALESCE(c.category_type, 'expense') != 'transfer'
+                  AND a.type = 'tracked'
             )
             SELECT
                 period,
@@ -202,7 +223,6 @@ class Stats:
             ORDER BY period
         """)
 
-        cur.execute("DROP VIEW IF EXISTS v_category_salary_period")
         cur.execute("""
             CREATE VIEW v_category_salary_period AS
             SELECT COALESCE(c.name, 'Uncategorized') AS category_name,
@@ -213,14 +233,15 @@ class Stats:
                    COUNT(*) AS count
             FROM transactions t
             JOIN v_salary_periods p ON t.id = p.transaction_id
+            JOIN accounts a ON a.id = t.account_id
             LEFT JOIN categories c ON c.id = t.category_id
-            WHERE t.adjusted_amount IS NOT NULL
+            WHERE t.adjusted_amount IS NOT NULL AND a.type = 'tracked'
             GROUP BY p.period, t.category_id
             ORDER BY month, category_name
         """)
 
         cur.execute("""
-            CREATE VIEW IF NOT EXISTS v_breakout_categories AS
+            CREATE VIEW v_breakout_categories AS
             WITH breakout_mapping AS (
                 SELECT id,
                        CASE
@@ -254,15 +275,17 @@ class Stats:
                 strftime('%Y-%m', t.date) AS month,
                 ROUND(SUM(t.adjusted_amount), 2) AS total
             FROM transactions t
+            JOIN accounts a ON a.id = t.account_id
             LEFT JOIN breakout_mapping bm ON t.category_id = bm.id
             WHERE t.adjusted_amount IS NOT NULL 
               AND t.adjusted_amount < 0
+              AND a.type = 'tracked'
               AND (t.category_id IS NULL OR t.category_id NOT IN (SELECT id FROM categories WHERE category_type = 'transfer'))
             GROUP BY COALESCE(bm.display_name, 'Uncategorized'), month
         """)
 
         cur.execute("""
-            CREATE VIEW IF NOT EXISTS v_uncategorized_groups AS
+            CREATE VIEW v_uncategorized_groups AS
             WITH cleaned_txns AS (
                 SELECT
                     t.id,
@@ -279,7 +302,7 @@ class Stats:
                     END AS group_key
                 FROM transactions t
                 JOIN accounts a ON a.id = t.account_id
-                WHERE t.category_id IS NULL
+                WHERE t.category_id IS NULL AND a.type = 'tracked'
             ),
             grouped_txns AS (
                 SELECT
@@ -342,6 +365,105 @@ class Stats:
             )
         return [
             {"month": r[0], "total_income": r[1], "total_expenses": r[2], "net": r[3]}
+            for r in cur.fetchall()
+        ]
+
+    def cash_flow_summary(self, month: str = None, period_type: str = "default") -> list[dict]:
+        """Get monthly cash flow summary (Operating, Transfers, Net).
+
+        Args:
+            month: Optional filter 'YYYY-MM'. If None, returns all months.
+            period_type: 'default', 'calendar', or 'salary'.
+
+        Returns:
+            list of dicts with:
+                - period: "YYYY-MM"
+                - operating: Operating cash flow (non-transfer on tracked accounts)
+                - transfers: Transfers cash flow (non-neutralized transfers from tracked accounts)
+                - net: operating + transfers
+        """
+        if period_type == "default":
+            mode = self.db.get_metadata("salary_period_mode", "fixed")
+            period_type = "salary" if mode in ("fixed", "salary") else "calendar"
+
+        cur = self.db.get_cursor()
+
+        # Determine how period is calculated
+        if period_type == "salary":
+            period_expr = "p.period"
+            join_periods = "JOIN v_salary_periods p ON t.id = p.transaction_id"
+        else:
+            period_expr = "strftime('%Y-%m', t.date)"
+            join_periods = ""
+
+        query = f"""
+            WITH txn_with_period AS (
+                SELECT
+                    t.id,
+                    t.amount,
+                    t.adjusted_amount,
+                    a.ownership_ratio,
+                    COALESCE(c.category_type, 'expense') AS category_type,
+                    c.associated_account_id,
+                    {period_expr} AS period
+                FROM transactions t
+                JOIN accounts a ON t.account_id = a.id
+                LEFT JOIN categories c ON c.id = t.category_id
+                {join_periods}
+                WHERE a.type = 'tracked'
+            ),
+            resolved_transfers AS (
+                SELECT
+                    t.id,
+                    t.period,
+                    t.category_type,
+                    t.adjusted_amount,
+                    t.amount * t.ownership_ratio * COALESCE(tl.ratio, 1.0) AS transfer_raw_amount,
+                    COALESCE(tl.to_account_id, t.associated_account_id) AS target_account_id
+                FROM txn_with_period t
+                LEFT JOIN transaction_links tl ON tl.from_transaction_id = t.id 
+                    AND tl.link_type IN ('internal_transfer', 'external_transfer')
+            ),
+            transfers_with_neutrality AS (
+                SELECT
+                    t.period,
+                    t.category_type,
+                    t.adjusted_amount,
+                    t.transfer_raw_amount,
+                    CASE
+                        WHEN t.id IN (SELECT from_transaction_id FROM transaction_links WHERE link_type = 'internal_transfer') THEN 1
+                        WHEN t.id IN (SELECT to_transaction_id FROM transaction_links WHERE link_type = 'internal_transfer') THEN 1
+                        WHEN t.target_account_id IS NOT NULL AND a_target.type = 'tracked' THEN 1
+                        WHEN t.target_account_id IS NOT NULL AND a_target.type = 'external' AND a_target.cash_neutral = 1 THEN 1
+                        ELSE 0
+                    END AS is_neutral
+                FROM resolved_transfers t
+                LEFT JOIN accounts a_target ON t.target_account_id = a_target.id
+            )
+            SELECT
+                period,
+                ROUND(SUM(CASE WHEN category_type != 'transfer' THEN adjusted_amount ELSE 0.0 END), 2) AS operating,
+                ROUND(SUM(CASE WHEN category_type = 'transfer' AND is_neutral = 0 THEN transfer_raw_amount ELSE 0.0 END), 2) AS transfers,
+                ROUND(SUM(CASE WHEN category_type != 'transfer' THEN adjusted_amount ELSE 0.0 END) + 
+                      SUM(CASE WHEN category_type = 'transfer' AND is_neutral = 0 THEN transfer_raw_amount ELSE 0.0 END), 2) AS net
+            FROM transfers_with_neutrality
+            {"WHERE period = ?" if month else ""}
+            GROUP BY period
+            ORDER BY period DESC
+        """
+
+        if month:
+            cur.execute(query, (month,))
+        else:
+            cur.execute(query)
+
+        return [
+            {
+                "period": r[0],
+                "operating": r[1] or 0.0,
+                "transfers": r[2] or 0.0,
+                "net": r[3] or 0.0,
+            }
             for r in cur.fetchall()
         ]
 
