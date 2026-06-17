@@ -129,6 +129,10 @@ The following commands require confirmation:
 | `recalculate` | Refresh adjusted_amount |
 | `db-cleanup [--dry-run] [--yes]` | Clean up orphaned database records (requires confirmation or `-y` when not running dry-run) |
 | `remove-transfer-rule <id> [--yes]` | Remove a transfer detection rule (requires confirmation or `-y`) |
+| `salary-config` | Show current salary period configuration |
+| `set-salary-mode <mode>` | Set salary period mode (`calendar`, `fixed`, `salary`) |
+| `set-salary-day <day>` | Set fixed boundary day of the month (1-28) |
+| `set-salary-category <name>` | Set category name used to scan for salary paydays |
 
 ## Testing
 
