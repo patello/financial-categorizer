@@ -6,7 +6,7 @@ Imports bank CSV files, auto-categorizes transactions using configurable rules, 
 
 ## Features
 
-- **Multi-account support** — personal, shared, savings, external accounts with ownership ratios
+- **Multi-account support** — tracked active accounts and external savings/investments with ownership ratios
 - **Auto-categorization** — regex, exact, and contains match rules with priority ordering and manual overrides
 - **Transaction linking** — mark transfers and reimbursements between transactions; adjusted amounts are pre-computed
 - **SQL views** — ready-to-query views for monthly summaries, category breakdowns, and daily spending
@@ -122,7 +122,8 @@ The following commands require confirmation:
 | `stats-category <name> [--period-type <type>]` | Category total with subcategory rollup |
 | `stats-trend <name> [--period-type <type>]` | Monthly breakdown for a category |
 | `stats-top [--period-type <type>]` | Top spending categories |
-| `stats-transfers [--month <YYYY-MM>] [--period-type <type>]` | Net capital transfers to external/savings accounts |
+| `stats-transfers [--month <YYYY-MM>] [--period-type <type>]` | Net capital transfers to external accounts |
+| `stats-cashflow [--month <YYYY-MM>] [--period-type <type>]` | Monthly cash flow summary (Operating, Transfers, Net) |
 | `link <from> [to] --type [--to-account <name_or_id>]` | Link transactions (specify `--to-account` for external transfers) |
 | `unlink <id> [--yes]` | Remove a link (requires confirmation or `-y`) |
 | `links` | List transaction links |

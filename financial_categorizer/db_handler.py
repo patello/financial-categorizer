@@ -122,12 +122,13 @@ class DatabaseHandler:
             CREATE TABLE IF NOT EXISTS accounts(
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
                 name            TEXT UNIQUE NOT NULL,
-                type            TEXT NOT NULL DEFAULT 'personal'
-                                CHECK(type IN ('personal','shared','savings','external')),
+                type            TEXT NOT NULL DEFAULT 'tracked'
+                                CHECK(type IN ('tracked','external')),
                 ownership_ratio REAL NOT NULL DEFAULT 1.0
                                 CHECK(ownership_ratio > 0 AND ownership_ratio <= 1.0),
                 currency        TEXT NOT NULL DEFAULT 'SEK',
-                description     TEXT
+                description     TEXT,
+                cash_neutral    INTEGER NOT NULL DEFAULT 0 CHECK(cash_neutral IN (0, 1))
             )""")
 
         cur.execute("""
@@ -212,6 +213,44 @@ class DatabaseHandler:
         if "associated_account_id" not in cols_cats:
             cur.execute("ALTER TABLE categories ADD COLUMN associated_account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL")
 
+        cur.execute("PRAGMA table_info(accounts)")
+        cols_accounts = [row[1] for row in cur.fetchall()]
+        if "cash_neutral" not in cols_accounts:
+            cur.execute("PRAGMA foreign_keys = OFF;")
+            try:
+                cur.execute("ALTER TABLE accounts RENAME TO accounts_old;")
+                cur.execute("""
+                    CREATE TABLE accounts(
+                        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name            TEXT UNIQUE NOT NULL,
+                        type            TEXT NOT NULL DEFAULT 'tracked'
+                                        CHECK(type IN ('tracked','external')),
+                        ownership_ratio REAL NOT NULL DEFAULT 1.0
+                                        CHECK(ownership_ratio > 0 AND ownership_ratio <= 1.0),
+                        currency        TEXT NOT NULL DEFAULT 'SEK',
+                        description     TEXT,
+                        cash_neutral    INTEGER NOT NULL DEFAULT 0 CHECK(cash_neutral IN (0, 1))
+                    )""")
+                cur.execute("""
+                    INSERT INTO accounts (id, name, type, ownership_ratio, currency, description, cash_neutral)
+                    SELECT 
+                        id, 
+                        name, 
+                        CASE 
+                            WHEN type IN ('personal', 'shared') THEN 'tracked'
+                            ELSE 'external'
+                        END,
+                        ownership_ratio, 
+                        currency, 
+                        description,
+                        0
+                    FROM accounts_old
+                """)
+                cur.execute("DROP TABLE accounts_old;")
+                self.conn.commit()
+            finally:
+                cur.execute("PRAGMA foreign_keys = ON;")
+
         self.conn.commit()
 
         cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
@@ -247,17 +286,18 @@ class DatabaseHandler:
     def add_account(
         self,
         name: str,
-        type: str = "personal",
+        type: str = "tracked",
         ownership_ratio: float = 1.0,
         currency: str = "SEK",
         description: str = None,
+        cash_neutral: int = 0,
     ) -> int:
         """Add a new account. Returns the account id."""
         cur = self.get_cursor()
         cur.execute(
-            "INSERT INTO accounts (name, type, ownership_ratio, currency, description) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (name, type, ownership_ratio, currency, description),
+            "INSERT INTO accounts (name, type, ownership_ratio, currency, description, cash_neutral) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (name, type, ownership_ratio, currency, description, cash_neutral),
         )
         self.commit()
         return cur.lastrowid
@@ -266,7 +306,7 @@ class DatabaseHandler:
         """Look up an account by ID."""
         cur = self.get_cursor()
         cur.execute(
-            "SELECT id, name, type, ownership_ratio, currency, description "
+            "SELECT id, name, type, ownership_ratio, currency, description, cash_neutral "
             "FROM accounts WHERE id = ?",
             (account_id,),
         )
@@ -280,13 +320,14 @@ class DatabaseHandler:
             "ownership_ratio": row[3],
             "currency": row[4],
             "description": row[5],
+            "cash_neutral": row[6],
         }
 
     def get_account_by_name(self, name: str) -> dict | None:
         """Look up an account by name."""
         cur = self.get_cursor()
         cur.execute(
-            "SELECT id, name, type, ownership_ratio, currency, description "
+            "SELECT id, name, type, ownership_ratio, currency, description, cash_neutral "
             "FROM accounts WHERE name = ?",
             (name,),
         )
@@ -300,13 +341,14 @@ class DatabaseHandler:
             "ownership_ratio": row[3],
             "currency": row[4],
             "description": row[5],
+            "cash_neutral": row[6],
         }
 
     def list_accounts(self) -> list[dict]:
         """Return all accounts."""
         cur = self.get_cursor()
         cur.execute(
-            "SELECT id, name, type, ownership_ratio, currency, description "
+            "SELECT id, name, type, ownership_ratio, currency, description, cash_neutral "
             "FROM accounts ORDER BY name"
         )
         return [
@@ -317,6 +359,7 @@ class DatabaseHandler:
                 "ownership_ratio": row[3],
                 "currency": row[4],
                 "description": row[5],
+                "cash_neutral": row[6],
             }
             for row in cur.fetchall()
         ]
@@ -329,6 +372,7 @@ class DatabaseHandler:
         ownership_ratio: float | None = None,
         currency: str | None = None,
         description: str | None = ...,
+        cash_neutral: int | None = None,
     ) -> bool:
         """Update an account's fields. Returns True if any change was made."""
         updates = []
@@ -351,6 +395,9 @@ class DatabaseHandler:
         if description is not ...:
             updates.append("description = ?")
             params.append(description)
+        if cash_neutral is not None:
+            updates.append("cash_neutral = ?")
+            params.append(cash_neutral)
 
         if not updates:
             return False

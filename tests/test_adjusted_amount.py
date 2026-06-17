@@ -45,7 +45,7 @@ class TestRecalculateAdjustedAmounts:
 
     def test_recalc_sets_amount_times_ratio(self, db):
         """adjusted_amount = amount * ownership_ratio after recalc."""
-        acct = db.add_account("Shared", type="shared", ownership_ratio=0.5)
+        acct = db.add_account("Shared", type="tracked", ownership_ratio=0.5)
         tid = _add_txn(db, datetime.date(2026, 1, 1), "Coffee", -40.0, acct)
         assert _get_adjusted(db, tid) is None
 

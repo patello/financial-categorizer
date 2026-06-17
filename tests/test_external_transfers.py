@@ -8,13 +8,13 @@ from financial_categorizer.stats import Stats
 def test_manual_link_to_external_account():
     db = DatabaseHandler(":memory:")
     try:
-        # Create origin accounts (personal and shared)
-        checking_id = db.add_account("Checking", type="personal", ownership_ratio=1.0)
-        shared_id = db.add_account("Shared Joint", type="shared", ownership_ratio=0.5)
+        # Create origin accounts
+        checking_id = db.add_account("Checking", type="tracked", ownership_ratio=1.0)
+        shared_id = db.add_account("Shared Joint", type="tracked", ownership_ratio=0.5)
 
         # Create external accounts
         avanza_id = db.add_account("Avanza", type="external")
-        nordea_savings_id = db.add_account("Nordea Savings", type="savings")
+        nordea_savings_id = db.add_account("Nordea Savings", type="external")
 
         # Create transactions
         cur = db.get_cursor()
@@ -56,7 +56,7 @@ def test_manual_link_to_external_account():
 def test_auto_link_via_categorization():
     db = DatabaseHandler(":memory:")
     try:
-        checking_id = db.add_account("Checking", type="personal", ownership_ratio=1.0)
+        checking_id = db.add_account("Checking", type="tracked", ownership_ratio=1.0)
         avanza_id = db.add_account("Avanza Brokerage", type="external")
 
         # Create category with associated_account_id and type "transfer"
@@ -98,7 +98,7 @@ def test_auto_link_via_categorization():
 def test_no_double_counting():
     db = DatabaseHandler(":memory:")
     try:
-        checking_id = db.add_account("Checking", type="personal", ownership_ratio=1.0)
+        checking_id = db.add_account("Checking", type="tracked", ownership_ratio=1.0)
         avanza_id = db.add_account("Avanza Brokerage", type="external")
 
         cat = Categorizer(db)

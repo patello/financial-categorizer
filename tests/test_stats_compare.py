@@ -10,7 +10,7 @@ from financial_categorizer.stats import Stats
 def db(tmp_path):
     """DB with transactions across 3 calendar months."""
     handler = DatabaseHandler(str(tmp_path / "test.db"))
-    handler.add_account("Checking", type="personal", ownership_ratio=1.0)
+    handler.add_account("Checking", type="tracked", ownership_ratio=1.0)
 
     cur = handler.get_cursor()
     # Add income/expense categories
@@ -115,7 +115,7 @@ class TestCompareEdgeCases:
     def test_single_month(self, tmp_path):
         """With only one month, no comparison possible."""
         handler = DatabaseHandler(str(tmp_path / "single.db"))
-        handler.add_account("A", type="personal")
+        handler.add_account("A", type="tracked")
         cur = handler.get_cursor()
         cur.execute("INSERT INTO transactions (account_id, date, amount, adjusted_amount, description) VALUES (1, '2026-01-10', -100, -100, 'Stuff')")
         handler.commit()

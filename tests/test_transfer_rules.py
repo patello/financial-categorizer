@@ -15,8 +15,8 @@ def db():
 
 @pytest.fixture
 def setup_accounts(db):
-    db.add_account("Checking", type="personal")
-    db.add_account("Savings", type="savings")
+    db.add_account("Checking", type="tracked")
+    db.add_account("Savings", type="external")
     return db
 
 
