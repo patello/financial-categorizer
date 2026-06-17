@@ -154,6 +154,22 @@ class TestReimbursement:
         assert _get_adjusted(db, t_exp1) == pytest.approx(-100.0)
         assert _get_adjusted(db, t_exp2) == pytest.approx(-100.0)
 
+    def test_reimbursement_scales_by_target_ownership_ratio(self, db, tm):
+        """Reimbursement credits the expense transaction scaled by the target account's ownership ratio."""
+        a_shared = db.add_account("Shared", type="shared", ownership_ratio=0.5)
+        a_personal = db.add_account("Personal", type="personal", ownership_ratio=1.0)
+        
+        t_expense = _add_txn(db, datetime.date(2026, 1, 1), "Dinner", -1000.0, a_shared)
+        t_reimb = _add_txn(db, datetime.date(2026, 1, 5), "Reimb dinner", 400.0, a_personal)
+        
+        tm.mark_reimbursement(t_reimb, t_expense, ratio=1.0)
+        
+        # The reimbursement on personal account should be fully neutralized to 0.0
+        assert _get_adjusted(db, t_reimb) == pytest.approx(0.0)
+        # The expense on shared account should be credited by 400 * 0.5 = 200 SEK,
+        # changing its adjusted amount from -500.0 to -300.0 SEK.
+        assert _get_adjusted(db, t_expense) == pytest.approx(-300.0)
+
 
 class TestUnlink:
 

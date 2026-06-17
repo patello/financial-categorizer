@@ -111,6 +111,24 @@ The following commands require confirmation:
 | `db-cleanup [--dry-run] [--yes]` | Purge orphaned transaction links and rules (Integrity Cleanup) (requires confirmation or `-y` when not running dry-run) |
 | `remove-transfer-rule <id> [--yes]` | Remove a transfer detection rule (requires confirmation or `-y`) |
 
+## Common Workflows
+
+### Handling Shared-Expense Reimbursements
+
+If you make a shared purchase (e.g., from the `Gemensamt` account, 50% ownership) and get reimbursed by an external person (e.g., via Swish to your `Personligt` account, 100% ownership) and subsequently transfer the payback to the shared account:
+
+1. **Reimburse the shared expense**: Link the reimbursement transaction (the Swish inflow) directly to the original expense transaction (the shared purchase):
+   ```bash
+   python cli.py --db data/finance.db link <swish_transaction_id> <expense_transaction_id> --type reimbursement --ratio 1.0
+   ```
+   * *Effect*: The Swish transaction is fully neutralized to `0.00` adjusted amount, and the credit to the expense transaction is automatically scaled by the shared account's ownership ratio (e.g., 50%), reducing your net cost correctly.
+
+2. **Link the account transfer**: Link the outflow from your personal account to the inflow on your shared account as an internal transfer:
+   ```bash
+   python cli.py --db data/finance.db link <transfer_out_id> <transfer_in_id> --type internal_transfer
+   ```
+   * *Effect*: Both sides of the transfer are neutralized to `0.00`, ensuring no false income or outflows are recorded.
+
 ## Skill Contents
 
 ```
