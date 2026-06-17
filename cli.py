@@ -120,8 +120,18 @@ def cmd_add_category(args):
     db = get_db(args.db)
     try:
         cat = Categorizer(db)
-        cid = cat.add_category(args.name, parent_id=args.parent, category_type=args.category_type, description=args.description)
+        assoc_id = None
+        if args.associated_account:
+            if args.associated_account.lower() not in ("none", "null"):
+                assoc_id = resolve_account_id(db, args.associated_account)
+        cid = cat.add_category(
+            args.name, parent_id=args.parent, category_type=args.category_type,
+            description=args.description, associated_account_id=assoc_id
+        )
         print(f"Created category '{args.name}' (id={cid})")
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
     finally:
         db.disconnect()
 
@@ -139,9 +149,14 @@ def cmd_update_category(args):
             kwargs["category_type"] = args.category_type
         if args.description is not None:
             kwargs["description"] = args.description
+        if args.associated_account is not None:
+            if args.associated_account.lower() in ("", "none", "null"):
+                kwargs["associated_account_id"] = None
+            else:
+                kwargs["associated_account_id"] = resolve_account_id(db, args.associated_account)
 
         if not kwargs:
-            print("Nothing to update. Specify --name, --parent, or --description.")
+            print("Nothing to update. Specify --name, --parent, --associated-account, or --description.")
             return
 
         updated = cat.update_category(args.id, **kwargs)
@@ -149,6 +164,9 @@ def cmd_update_category(args):
             print(f"Updated category {args.id}")
         else:
             print(f"No changes made (category {args.id} not found or values unchanged)")
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
     finally:
         db.disconnect()
 
@@ -478,6 +496,25 @@ def cmd_manual_match(args):
         db.disconnect()
 
 
+def resolve_account_id(db, name_or_id: str) -> int:
+    """Resolve an account name or ID to an account ID."""
+    if not name_or_id:
+        return None
+    try:
+        acct_id = int(name_or_id)
+        acct = db.get_account(acct_id)
+        if acct:
+            return acct["id"]
+    except ValueError:
+        pass
+
+    acct = db.get_account_by_name(name_or_id)
+    if acct:
+        return acct["id"]
+
+    raise ValueError(f"Account '{name_or_id}' not found.")
+
+
 def resolve_period_type(db, arg_value):
     if arg_value == "default":
         mode = db.get_metadata("salary_period_mode", "fixed")
@@ -568,6 +605,27 @@ def cmd_stats_top(args):
         db.disconnect()
 
 
+def cmd_stats_transfers(args):
+    db = get_db(args.db)
+    try:
+        pt = resolve_period_type(db, args.period_type)
+        stats = Stats(db)
+        rows = stats.external_transfers_summary(month=args.month, period_type=pt)
+        if not rows:
+            print("No transfers found.")
+            return
+
+        current_period = None
+        for r in rows:
+            if r["period"] != current_period:
+                current_period = r["period"]
+                print(f"\nPeriod: {current_period}")
+            sign = "+" if r["net_transferred"] >= 0 else ""
+            print(f"  {r['account_name']}: {sign}{r['net_transferred']:.2f}")
+    finally:
+        db.disconnect()
+
+
 def cmd_recalculate(args):
     db = get_db(args.db)
     try:
@@ -611,10 +669,14 @@ def cmd_cleanup(args):
 def cmd_link(args):
     db = get_db(args.db)
     try:
+        to_account_id = None
+        if args.to_account:
+            to_account_id = resolve_account_id(db, args.to_account)
         tm = TransferManager(db)
         link_id = tm.link_transactions(
             args.from_id, args.to_id, args.type,
             ratio=args.ratio, comment=args.comment,
+            to_account_id=to_account_id,
         )
         print(f"Created link {link_id} ({args.type})")
     except ValueError as e:
@@ -942,6 +1004,7 @@ def main():
                            choices=["income", "expense", "transfer"],
                            help="Category type (default: expense)")
     p_add_cat.add_argument("--description", help="Category description")
+    p_add_cat.add_argument("--associated-account", help="Associated account name or ID")
     p_add_cat.set_defaults(func=cmd_add_category)
 
     # update-category
@@ -953,6 +1016,7 @@ def main():
                            choices=["income", "expense", "transfer"],
                            help="New category type")
     p_upd_cat.add_argument("--description", help="New description")
+    p_upd_cat.add_argument("--associated-account", help="Associated account name or ID (use 'none' to clear)")
     p_upd_cat.set_defaults(func=cmd_update_category)
 
     # delete-category
@@ -1042,6 +1106,13 @@ def main():
                                  help="Period type: calendar, salary, or default (dynamically determined by active salary config)")
     p_stats_top.set_defaults(func=cmd_stats_top)
 
+    # stats-transfers
+    p_stats_transfers = subparsers.add_parser("stats-transfers", help="Net transfers to external/savings accounts")
+    p_stats_transfers.add_argument("--month", help="Filter to YYYY-MM")
+    p_stats_transfers.add_argument("--period-type", choices=["calendar", "salary", "default"], default="default",
+                                   help="Period type: calendar, salary, or default (dynamically determined by active salary config)")
+    p_stats_transfers.set_defaults(func=cmd_stats_transfers)
+
     # recalculate
     p_recalc = subparsers.add_parser("recalculate", help="Recalculate adjusted_amount for all transactions")
     p_recalc.set_defaults(func=cmd_recalculate)
@@ -1059,6 +1130,7 @@ def main():
     p_link.add_argument("--type", required=True, choices=["internal_transfer", "external_transfer", "reimbursement"], help="Link type")
     p_link.add_argument("--ratio", type=float, default=1.0, help="Ratio (default: 1.0)")
     p_link.add_argument("--comment", help="Comment")
+    p_link.add_argument("--to-account", help="Target external account name or ID (only for external_transfer)")
     p_link.set_defaults(func=cmd_link)
 
     # unlink

@@ -108,8 +108,8 @@ The following commands require confirmation:
 | `update-account <id>` | Update account fields |
 | `delete-account <id> [--yes]` | Delete an account (requires confirmation or `-y`) |
 | `categories` | List categories (tree view) |
-| `add-category <name>` | Create a category |
-| `update-category <id>` | Update category fields |
+| `add-category <name> [--associated-account <name_or_id>]` | Create a category, optionally associated with an external account |
+| `update-category <id> [--associated-account <name_or_id>]` | Update category fields (use `none` to clear association) |
 | `delete-category <id> [--yes]` | Delete a category (requires confirmation or `-y`) |
 | `rules` | List match rules |
 | `add-rule <cat> <pattern>` | Add a categorization rule |
@@ -122,7 +122,8 @@ The following commands require confirmation:
 | `stats-category <name> [--period-type <type>]` | Category total with subcategory rollup |
 | `stats-trend <name> [--period-type <type>]` | Monthly breakdown for a category |
 | `stats-top [--period-type <type>]` | Top spending categories |
-| `link <from> [to] --type` | Link transactions |
+| `stats-transfers [--month <YYYY-MM>] [--period-type <type>]` | Net capital transfers to external/savings accounts |
+| `link <from> [to] --type [--to-account <name_or_id>]` | Link transactions (specify `--to-account` for external transfers) |
 | `unlink <id> [--yes]` | Remove a link (requires confirmation or `-y`) |
 | `links` | List transaction links |
 | `auto-link [--dry-run] [--yes]` | Auto-detect and link internal transfers (requires confirmation or `-y` when not running dry-run) |

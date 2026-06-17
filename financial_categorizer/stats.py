@@ -561,3 +561,94 @@ class Stats:
              "total_expenses": r[2] or 0.0, "net": r[3] or 0.0}
             for r in cur.fetchall()
         ]
+
+    def external_transfers_summary(
+        self, month: str = None, period_type: str = "calendar"
+    ) -> list[dict]:
+        """Calculate net capital transfers to external accounts.
+
+        Returns a list of dicts:
+        [
+            {
+                "period": "YYYY-MM",
+                "account_id": int,
+                "account_name": str,
+                "net_transferred": float
+            },
+            ...
+        ]
+        """
+        cur = self.db.get_cursor()
+
+        # Determine how period is calculated
+        if period_type == "salary":
+            period_expr = "p.period"
+            join_periods = "JOIN v_salary_periods p ON t.id = p.transaction_id"
+        else:
+            period_expr = "strftime('%Y-%m', t.date)"
+            join_periods = ""
+
+        # We construct the query to select transaction date/amount, ownership ratio, and resolve target account.
+        # Net transferred = -1 * t.amount * a_orig.ownership_ratio * COALESCE(tl.ratio, 1.0)
+        if month:
+            query = f"""
+                WITH resolved_transfers AS (
+                    SELECT
+                        {period_expr} AS period,
+                        COALESCE(tl.to_account_id, c.associated_account_id) AS target_account_id,
+                        -1.0 * t.amount * a_orig.ownership_ratio * COALESCE(tl.ratio, 1.0) AS net_amount
+                    FROM transactions t
+                    JOIN accounts a_orig ON t.account_id = a_orig.id
+                    {join_periods}
+                    LEFT JOIN transaction_links tl ON tl.from_transaction_id = t.id AND tl.link_type = 'external_transfer'
+                    LEFT JOIN categories c ON t.category_id = c.id
+                    WHERE (tl.id IS NOT NULL OR c.associated_account_id IS NOT NULL)
+                )
+                SELECT
+                    r.period,
+                    r.target_account_id,
+                    COALESCE(a_target.name, 'Unspecified External Account') AS target_account_name,
+                    ROUND(SUM(r.net_amount), 2) AS net_transferred
+                FROM resolved_transfers r
+                LEFT JOIN accounts a_target ON r.target_account_id = a_target.id
+                WHERE r.period = ?
+                GROUP BY r.period, r.target_account_id
+                ORDER BY r.period DESC, target_account_name ASC
+            """
+            cur.execute(query, (month,))
+        else:
+            query = f"""
+                WITH resolved_transfers AS (
+                    SELECT
+                        {period_expr} AS period,
+                        COALESCE(tl.to_account_id, c.associated_account_id) AS target_account_id,
+                        -1.0 * t.amount * a_orig.ownership_ratio * COALESCE(tl.ratio, 1.0) AS net_amount
+                    FROM transactions t
+                    JOIN accounts a_orig ON t.account_id = a_orig.id
+                    {join_periods}
+                    LEFT JOIN transaction_links tl ON tl.from_transaction_id = t.id AND tl.link_type = 'external_transfer'
+                    LEFT JOIN categories c ON t.category_id = c.id
+                    WHERE (tl.id IS NOT NULL OR c.associated_account_id IS NOT NULL)
+                )
+                SELECT
+                    r.period,
+                    r.target_account_id,
+                    COALESCE(a_target.name, 'Unspecified External Account') AS target_account_name,
+                    ROUND(SUM(r.net_amount), 2) AS net_transferred
+                FROM resolved_transfers r
+                LEFT JOIN accounts a_target ON r.target_account_id = a_target.id
+                GROUP BY r.period, r.target_account_id
+                ORDER BY r.period DESC, target_account_name ASC
+            """
+            cur.execute(query)
+
+        return [
+            {
+                "period": row[0],
+                "account_id": row[1],
+                "account_name": row[2],
+                "net_transferred": row[3] or 0.0,
+            }
+            for row in cur.fetchall()
+        ]
+
