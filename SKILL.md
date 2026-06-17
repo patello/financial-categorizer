@@ -89,8 +89,8 @@ The following commands require confirmation:
 | `update-account <id>` | Update account ownership ratio, type, name, etc. |
 | `delete-account <id> [--yes]` | Delete a bank account (requires confirmation or `-y`) |
 | `categories` | List all categories in tree view |
-| `add-category <name>` | Create a new category |
-| `update-category <id>` | Update category parents or fields |
+| `add-category <name> [--associated-account <name_or_id>]` | Create a new category, optionally associated with an external account |
+| `update-category <id> [--associated-account <name_or_id>]` | Update category parents or fields (use `none` to clear association) |
 | `delete-category <id> [--yes]` | Delete a category (requires confirmation or `-y`) |
 | `rules` | List all auto-categorization rules |
 | `add-rule <cat_id> <pattern>` | Add a categorization rule (regex, contains, exact) |
@@ -103,7 +103,8 @@ The following commands require confirmation:
 | `stats-category <name> [--period-type <type>]` | Category total with subcategory rollups |
 | `stats-trend <name> [--period-type <type>]` | Monthly trend for a category |
 | `stats-top [--period-type <type>]` | Top spending categories sorted by total expenses |
-| `link <from_id> [to_id] --type`| Link transactions (e.g. transfers, reimbursements) |
+| `stats-transfers [--month <YYYY-MM>] [--period-type <type>]` | Net capital transfers to external/savings accounts |
+| `link <from_id> [to_id] --type [--to-account <name_or_id>]` | Link transactions (specify `--to-account` for external transfers) |
 | `unlink <id> [--yes]` | Remove a link (requires confirmation or `-y`) |
 | `links` | List all transaction links |
 | `auto-link [--dry-run] [--yes]` | Auto-detect and link internal transfers using transfer rules (requires confirmation or `-y` when not running dry-run) |
@@ -177,6 +178,40 @@ If you make a shared purchase (e.g., from the `Gemensamt` account, 50% ownership
    python cli.py --db data/finance.db link <transfer_out_id> <transfer_in_id> --type internal_transfer
    ```
    * *Effect*: Both sides of the transfer are neutralized to `0.00`, ensuring no false income or outflows are recorded.
+
+## Tracking External Accounts
+
+You can track capital transfers from your main accounts to untracked external accounts (such as savings or stock brokerage accounts).
+
+### Setup and Workflow:
+1. **Create the External Account**:
+   ```bash
+   python cli.py add-account "Avanza Brokerage" --type external
+   ```
+2. **Associate a Category**:
+   Create a category of type `transfer` associated with this external account:
+   ```bash
+   python cli.py add-category "Brokerage Transfer" --type transfer --associated-account "Avanza Brokerage"
+   ```
+3. **Add a Categorization Rule**:
+   Add a match rule to auto-categorize transfers:
+   ```bash
+   python cli.py add-rule <category_id> "AVANZA" --type contains
+   ```
+4. **Auto-linking**:
+   When transactions are categorized (via `categorize` or manual overrides), if they match a transfer category linked to an external account, an `external_transfer` link is created automatically.
+
+### Manual Linking:
+For one-off transfers, you can link a transaction directly to an external account:
+```bash
+python cli.py link <transaction_id> --type external_transfer --to-account "Avanza Brokerage"
+```
+
+### Querying Statistics:
+Use the `stats-transfers` command to view net capital movements per external account:
+```bash
+python cli.py stats-transfers --month 2026-06
+```
 
 ## Skill Contents
 

@@ -53,6 +53,8 @@ class Categorizer:
                 (row[0], transaction_id),
             )
             self.db.commit()
+            # Auto-create external_transfer link for transfer-type categories
+            self._link_external_transfer(transaction_id, row[0], recalculate=recalculate)
             return row[0]
 
         # 2. Get the transaction description and amount
@@ -105,10 +107,11 @@ class Categorizer:
         """
         cur = self.db.get_cursor()
         # Check category type
-        cur.execute("SELECT category_type FROM categories WHERE id = ?", (category_id,))
+        cur.execute("SELECT category_type, associated_account_id FROM categories WHERE id = ?", (category_id,))
         row = cur.fetchone()
         if not row or row[0] != "transfer":
             return
+        associated_account_id = row[1]
         # Check if already linked
         cur.execute(
             "SELECT id FROM transaction_links WHERE from_transaction_id = ? AND link_type = 'external_transfer'",
@@ -117,9 +120,9 @@ class Categorizer:
         if cur.fetchone():
             return
         cur.execute(
-            "INSERT INTO transaction_links (from_transaction_id, to_transaction_id, link_type, ratio, comment) "
-            "VALUES (?, NULL, 'external_transfer', 1.0, 'auto-linked via categorize')",
-            (transaction_id,),
+            "INSERT INTO transaction_links (from_transaction_id, to_transaction_id, link_type, ratio, comment, to_account_id) "
+            "VALUES (?, NULL, 'external_transfer', 1.0, 'auto-linked via categorize', ?)",
+            (transaction_id, associated_account_id),
         )
         self.db.commit()
         if recalculate:
@@ -305,6 +308,8 @@ class Categorizer:
             (category_id, transaction_id),
         )
         self.db.commit()
+        # Auto-create external_transfer link for transfer-type categories
+        self._link_external_transfer(transaction_id, category_id, recalculate=True)
         return cur.lastrowid
 
     # ------------------------------------------------------------------ #
@@ -390,13 +395,14 @@ class Categorizer:
 
     def add_category(
         self, name: str, parent_id: int | None = None,
-        category_type: str = "expense", description: str = None
+        category_type: str = "expense", description: str = None,
+        associated_account_id: int | None = None
     ) -> int:
         """Add a new category. Returns the category id."""
         cur = self.db.get_cursor()
         cur.execute(
-            "INSERT INTO categories (name, parent_id, category_type, description) VALUES (?, ?, ?, ?)",
-            (name, parent_id, category_type, description),
+            "INSERT INTO categories (name, parent_id, category_type, description, associated_account_id) VALUES (?, ?, ?, ?, ?)",
+            (name, parent_id, category_type, description, associated_account_id),
         )
         self.db.commit()
         return cur.lastrowid
@@ -405,20 +411,20 @@ class Categorizer:
         """Look up a category by name."""
         cur = self.db.get_cursor()
         cur.execute(
-            "SELECT id, name, parent_id, category_type, description FROM categories WHERE name = ?",
+            "SELECT id, name, parent_id, category_type, description, associated_account_id FROM categories WHERE name = ?",
             (name,),
         )
         row = cur.fetchone()
         if not row:
             return None
-        return {"id": row[0], "name": row[1], "parent_id": row[2], "category_type": row[3], "description": row[4]}
+        return {"id": row[0], "name": row[1], "parent_id": row[2], "category_type": row[3], "description": row[4], "associated_account_id": row[5]}
 
     def list_categories(self) -> list[dict]:
         """Return all categories."""
         cur = self.db.get_cursor()
-        cur.execute("SELECT id, name, parent_id, category_type, description FROM categories ORDER BY name")
+        cur.execute("SELECT id, name, parent_id, category_type, description, associated_account_id FROM categories ORDER BY name")
         return [
-            {"id": row[0], "name": row[1], "parent_id": row[2], "category_type": row[3], "description": row[4]}
+            {"id": row[0], "name": row[1], "parent_id": row[2], "category_type": row[3], "description": row[4], "associated_account_id": row[5]}
             for row in cur.fetchall()
         ]
 
@@ -426,13 +432,13 @@ class Categorizer:
         """Look up a single category by ID."""
         cur = self.db.get_cursor()
         cur.execute(
-            "SELECT id, name, parent_id, category_type, description FROM categories WHERE id = ?",
+            "SELECT id, name, parent_id, category_type, description, associated_account_id FROM categories WHERE id = ?",
             (category_id,),
         )
         row = cur.fetchone()
         if not row:
             return None
-        return {"id": row[0], "name": row[1], "parent_id": row[2], "category_type": row[3], "description": row[4]}
+        return {"id": row[0], "name": row[1], "parent_id": row[2], "category_type": row[3], "description": row[4], "associated_account_id": row[5]}
 
     def get_parent(self, category_id: int) -> dict | None:
         """Return the parent category, or None if root."""
@@ -453,7 +459,7 @@ class Categorizer:
 
         def _recurse(pid, depth):
             cur.execute(
-                "SELECT id, name, parent_id, category_type, description FROM categories WHERE parent_id = ?",
+                "SELECT id, name, parent_id, category_type, description, associated_account_id FROM categories WHERE parent_id = ?",
                 (pid,),
             )
             for row in cur.fetchall():
@@ -461,6 +467,7 @@ class Categorizer:
                     "id": row[0], "name": row[1],
                     "parent_id": row[2], "category_type": row[3],
                     "description": row[4], "depth": depth,
+                    "associated_account_id": row[5],
                 })
                 _recurse(row[0], depth + 1)
 
@@ -471,11 +478,11 @@ class Categorizer:
         """Return direct children of a category."""
         cur = self.db.get_cursor()
         cur.execute(
-            "SELECT id, name, parent_id, description FROM categories WHERE parent_id = ?",
+            "SELECT id, name, parent_id, description, associated_account_id FROM categories WHERE parent_id = ?",
             (category_id,),
         )
         return [
-            {"id": row[0], "name": row[1], "parent_id": row[2], "description": row[3]}
+            {"id": row[0], "name": row[1], "parent_id": row[2], "description": row[3], "associated_account_id": row[4]}
             for row in cur.fetchall()
         ]
 
@@ -486,11 +493,12 @@ class Categorizer:
         parent_id: int | None = ...,  # sentinel to distinguish None from unset
         category_type: str | None = None,
         description: str | None = ...,  # sentinel
+        associated_account_id: int | None = ...,  # sentinel
     ) -> bool:
-        """Update a category's name, parent, type, or description.
+        """Update a category's name, parent, type, description, or associated account.
 
         Only updates fields that are explicitly passed. Use None to clear
-        parent_id or description. Returns True if any change was made.
+        parent_id, description, or associated_account_id. Returns True if any change was made.
         """
         updates = []
         params = []
@@ -506,6 +514,9 @@ class Categorizer:
         if description is not ...:
             updates.append("description = ?")
             params.append(description)
+        if associated_account_id is not ...:
+            updates.append("associated_account_id = ?")
+            params.append(associated_account_id)
 
         if not updates:
             return False
