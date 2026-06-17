@@ -118,10 +118,10 @@ The following commands require confirmation:
 | `categorize [--all]` | Run auto-categorization |
 | `uncategorized` | Show uncategorized transactions |
 | `manual-match <txn> <cat>` | Manually assign a category |
-| `stats-summary` | Monthly income/expenses/net |
-| `stats-category <name>` | Category total with subcategory rollup |
-| `stats-trend <name>` | Monthly breakdown for a category |
-| `stats-top` | Top spending categories |
+| `stats-summary [--period-type <type>]` | Monthly income/expenses/net |
+| `stats-category <name> [--period-type <type>]` | Category total with subcategory rollup |
+| `stats-trend <name> [--period-type <type>]` | Monthly breakdown for a category |
+| `stats-top [--period-type <type>]` | Top spending categories |
 | `link <from> [to] --type` | Link transactions |
 | `unlink <id> [--yes]` | Remove a link (requires confirmation or `-y`) |
 | `links` | List transaction links |
