@@ -357,6 +357,14 @@ def test_db_migration_rebuilds_corrupted_v1_1_0_db(tmp_path):
             to_account_id       INTEGER REFERENCES accounts_old(id) ON DELETE SET NULL
         )""")
 
+    # Create a view that will block DDL operations if not dropped
+    cur.execute("""
+        CREATE VIEW v_effective_transactions AS
+        SELECT t.id, t.date, a.name AS account_name
+        FROM transactions t
+        JOIN accounts a ON a.id = t.account_id
+    """)
+
     # Insert some initial data
     cur.execute("INSERT INTO accounts (id, name, type, cash_neutral) VALUES (1, 'Checking', 'tracked', 0)")
     cur.execute("INSERT INTO categories (id, name, category_type, associated_account_id) VALUES (1, 'Food', 'expense', 1)")
@@ -376,6 +384,7 @@ def test_db_migration_rebuilds_corrupted_v1_1_0_db(tmp_path):
             (datetime.date(2026, 6, 16), "Coop", -50.0, 1, 1)
         )
         db.commit()
+        db.recalculate_adjusted_amounts()
 
         # Check transaction was inserted successfully
         cur.execute("SELECT count(*) FROM transactions")
@@ -384,6 +393,10 @@ def test_db_migration_rebuilds_corrupted_v1_1_0_db(tmp_path):
         # Verify that schema SQL no longer contains any reference to accounts_old
         cur.execute("SELECT sql FROM sqlite_master WHERE type='table' AND sql LIKE '%accounts_old%'")
         assert len(cur.fetchall()) == 0
+
+        # Verify that views are successfully recreated and working
+        cur.execute("SELECT * FROM v_effective_transactions")
+        assert len(cur.fetchall()) == 2
     finally:
         db.disconnect()
 

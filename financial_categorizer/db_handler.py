@@ -261,6 +261,12 @@ class DatabaseHandler:
             old_isolation = self.conn.isolation_level
             self.conn.isolation_level = None
             try:
+                # Drop all views first to prevent broken view references from blocking table renames/DDL
+                cur.execute("SELECT name FROM sqlite_master WHERE type='view'")
+                views = [r[0] for r in cur.fetchall()]
+                for view_name in views:
+                    cur.execute(f"DROP VIEW IF EXISTS {view_name};")
+                
                 cur.execute("PRAGMA foreign_keys = OFF;")
                 cur.execute("BEGIN TRANSACTION;")
                 for table_name, old_sql in corrupted_tables:
@@ -287,6 +293,11 @@ class DatabaseHandler:
                 cur.execute("PRAGMA foreign_keys = ON;")
                 self.conn.isolation_level = old_isolation
             self.conn.commit()
+            
+            # Recreate all views dynamically
+            from financial_categorizer.stats import Stats
+            stats = Stats(self)
+            stats._ensure_views()
 
         cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
         return [row[0] for row in cur.fetchall()]
