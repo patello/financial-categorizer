@@ -16,18 +16,18 @@ class TestAccountCRUD:
         aid = db.add_account("checking")
         acct = db.get_account(aid)
         assert acct["name"] == "checking"
-        assert acct["type"] == "personal"
+        assert acct["type"] == "tracked"
         assert acct["ownership_ratio"] == 1.0
         assert acct["currency"] == "SEK"
         assert acct["description"] is None
 
     def test_add_account_with_options(self, db):
         aid = db.add_account(
-            "shared", type="shared", ownership_ratio=0.5,
+            "shared", type="tracked", ownership_ratio=0.5,
             currency="SEK", description="Joint account"
         )
         acct = db.get_account(aid)
-        assert acct["type"] == "shared"
+        assert acct["type"] == "tracked"
         assert acct["ownership_ratio"] == 0.5
         assert acct["description"] == "Joint account"
 
@@ -79,8 +79,8 @@ class TestAccountCRUD:
 
     def test_update_account_type(self, db):
         aid = db.add_account("checking")
-        db.update_account(aid, type="savings")
-        assert db.get_account(aid)["type"] == "savings"
+        db.update_account(aid, type="external")
+        assert db.get_account(aid)["type"] == "external"
 
     def test_update_account_ownership(self, db):
         aid = db.add_account("shared")
@@ -127,7 +127,7 @@ class TestAccountCRUD:
         assert aid1 == aid2
 
     def test_ensure_account_with_kwargs(self, db):
-        aid = db.ensure_account("shared_acct", type="shared", ownership_ratio=0.5)
+        aid = db.ensure_account("shared_acct", type="tracked", ownership_ratio=0.5)
         acct = db.get_account(aid)
-        assert acct["type"] == "shared"
+        assert acct["type"] == "tracked"
         assert acct["ownership_ratio"] == 0.5
