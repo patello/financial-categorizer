@@ -202,6 +202,23 @@ class Stats:
             ORDER BY period
         """)
 
+        cur.execute("DROP VIEW IF EXISTS v_category_salary_period")
+        cur.execute("""
+            CREATE VIEW v_category_salary_period AS
+            SELECT COALESCE(c.name, 'Uncategorized') AS category_name,
+                   t.category_id,
+                   COALESCE(c.category_type, 'expense') AS category_type,
+                   p.period AS month,
+                   ROUND(SUM(t.adjusted_amount), 2) AS total,
+                   COUNT(*) AS count
+            FROM transactions t
+            JOIN v_salary_periods p ON t.id = p.transaction_id
+            LEFT JOIN categories c ON c.id = t.category_id
+            WHERE t.adjusted_amount IS NOT NULL
+            GROUP BY p.period, t.category_id
+            ORDER BY month, category_name
+        """)
+
         cur.execute("""
             CREATE VIEW IF NOT EXISTS v_breakout_categories AS
             WITH breakout_mapping AS (
@@ -300,25 +317,28 @@ class Stats:
 
         self.db.commit()
 
-    def monthly_summary(self, month: str = None) -> list[dict]:
+    def monthly_summary(self, month: str = None, period_type: str = "calendar") -> list[dict]:
         """Get monthly income/expenses/net.
 
         Args:
             month: Optional filter 'YYYY-MM'. If None, returns all months.
+            period_type: 'calendar' or 'salary'.
 
         Returns list of dicts with month, total_income, total_expenses, net.
         """
         cur = self.db.get_cursor()
+        view = "v_salary_period_summary" if period_type == "salary" else "v_monthly_summary"
+        col = "period" if period_type == "salary" else "month"
         if month:
             cur.execute(
-                "SELECT month, total_income, total_expenses, net "
-                "FROM v_monthly_summary WHERE month = ?",
+                f"SELECT {col}, total_income, total_expenses, net "
+                f"FROM {view} WHERE {col} = ?",
                 (month,),
             )
         else:
             cur.execute(
-                "SELECT month, total_income, total_expenses, net "
-                "FROM v_monthly_summary"
+                f"SELECT {col}, total_income, total_expenses, net "
+                f"FROM {view}"
             )
         return [
             {"month": r[0], "total_income": r[1], "total_expenses": r[2], "net": r[3]}
@@ -326,13 +346,15 @@ class Stats:
         ]
 
     def category_total(self, category_id: int, month: str = None,
-                       date_from: date = None, date_to: date = None) -> dict:
+                       date_from: date = None, date_to: date = None,
+                       period_type: str = "calendar") -> dict:
         """Get total for a category including all children.
 
         Args:
             category_id: The category to sum (includes subcategories).
             month: Optional 'YYYY-MM' filter.
             date_from/date_to: Optional date range.
+            period_type: 'calendar' or 'salary'.
 
         Returns dict with category_id, total, count.
         """
@@ -346,25 +368,31 @@ class Stats:
         ids.extend(c["id"] for c in subtree)
 
         placeholders = ",".join("?" * len(ids))
-        conditions = [f"category_id IN ({placeholders})"]
+        conditions = [f"t.category_id IN ({placeholders})"]
         params = list(ids)
 
-        if month:
-            conditions.append("strftime('%Y-%m', date) = ?")
+        from_clause = "v_effective_transactions t"
+        if period_type == "salary" and month:
+            from_clause += " JOIN v_salary_periods p ON t.id = p.transaction_id"
+            conditions.append("p.period = ?")
             params.append(month)
+        elif month:
+            conditions.append("strftime('%Y-%m', t.date) = ?")
+            params.append(month)
+
         if date_from:
-            conditions.append("date >= ?")
+            conditions.append("t.date >= ?")
             params.append(date_from)
         if date_to:
-            conditions.append("date <= ?")
+            conditions.append("t.date <= ?")
             params.append(date_to)
 
         where = " AND ".join(conditions)
 
         cur = self.db.get_cursor()
         cur.execute(
-            f"SELECT ROUND(SUM(adjusted_amount), 2), COUNT(*) "
-            f"FROM v_effective_transactions WHERE {where}",
+            f"SELECT ROUND(SUM(t.adjusted_amount), 2), COUNT(*) "
+            f"FROM {from_clause} WHERE {where}",
             params,
         )
         row = cur.fetchone()
@@ -374,26 +402,30 @@ class Stats:
             "count": row[1],
         }
 
-    def top_spending(self, month: str = None, limit: int = 10) -> list[dict]:
+    def top_spending(self, month: str = None, limit: int = 10,
+                     period_type: str = "calendar") -> list[dict]:
         """Top spending categories by adjusted_amount.
 
         Args:
             month: Optional 'YYYY-MM' filter.
             limit: Max categories to return.
+            period_type: 'calendar' or 'salary'.
 
         Returns list of dicts sorted by total spending (most negative first).
         """
         cur = self.db.get_cursor()
         params = []
         conditions = ["total < 0"]
+        view = "v_category_salary_period" if period_type == "salary" else "v_category_monthly"
+        col = "month"
         if month:
-            conditions.append("month = ?")
+            conditions.append(f"{col} = ?")
             params.append(month)
 
         where = " AND ".join(conditions)
         cur.execute(
-            f"SELECT category_name, category_id, month, total, count "
-            f"FROM v_category_monthly WHERE {where} "
+            f"SELECT category_name, category_id, {col}, total, count "
+            f"FROM {view} WHERE {where} "
             f"ORDER BY total ASC LIMIT ?",
             params + [limit],
         )
@@ -404,7 +436,7 @@ class Stats:
         ]
 
     def trend(self, category_id: int, date_from: date = None,
-              date_to: date = None) -> list[dict]:
+              date_to: date = None, period_type: str = "calendar") -> list[dict]:
         """Monthly breakdown for a category (including children).
 
         Returns list of dicts with month, total, count.
@@ -421,20 +453,23 @@ class Stats:
         conditions = [f"category_id IN ({placeholders})"]
         params = list(ids)
 
+        view = "v_category_salary_period" if period_type == "salary" else "v_category_monthly"
+        col = "month"
+
         if date_from:
-            conditions.append("month >= strftime('%Y-%m', ?)")
+            conditions.append(f"{col} >= strftime('%Y-%m', ?)")
             params.append(date_from)
         if date_to:
-            conditions.append("month <= strftime('%Y-%m', ?)")
+            conditions.append(f"{col} <= strftime('%Y-%m', ?)")
             params.append(date_to)
 
         where = " AND ".join(conditions)
 
         cur = self.db.get_cursor()
         cur.execute(
-            f"SELECT month, ROUND(SUM(total), 2), SUM(count) "
-            f"FROM v_category_monthly WHERE {where} "
-            f"GROUP BY month ORDER BY month",
+            f"SELECT {col}, ROUND(SUM(total), 2), SUM(count) "
+            f"FROM {view} WHERE {where} "
+            f"GROUP BY {col} ORDER BY {col}",
             params,
         )
         return [

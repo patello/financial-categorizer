@@ -99,10 +99,10 @@ The following commands require confirmation:
 | `categorize [--all]` | Run auto-categorization rules |
 | `uncategorized` | List all uncategorized transactions |
 | `manual-match <txn_id> <cat_id>` | Manually assign a category override to a transaction |
-| `stats-summary` | Monthly summary of income, expenses, and net |
-| `stats-category <name>` | Category total with subcategory rollups |
-| `stats-trend <name>` | Monthly trend for a category |
-| `stats-top` | Top spending categories sorted by total expenses |
+| `stats-summary [--period-type <type>]` | Monthly summary of income, expenses, and net |
+| `stats-category <name> [--period-type <type>]` | Category total with subcategory rollups |
+| `stats-trend <name> [--period-type <type>]` | Monthly trend for a category |
+| `stats-top [--period-type <type>]` | Top spending categories sorted by total expenses |
 | `link <from_id> [to_id] --type`| Link transactions (e.g. transfers, reimbursements) |
 | `unlink <id> [--yes]` | Remove a link (requires confirmation or `-y`) |
 | `links` | List all transaction links |
@@ -144,6 +144,21 @@ python cli.py set-salary-day 27
 > If you choose the **`fixed`** day mode, be aware that bank deposits and transactions can shift early or late due to weekends and holidays.
 > - Ensure your fixed day is configured early or late enough so that fluctuations in actual payday do not cause two salary deposits to fall into the same period (which would result in one month showing double income and the next showing zero income).
 > - Alternatively, use the **`salary`** mode, which automatically detects the actual deposit transaction dates and shifts the boundaries dynamically.
+
+### Querying Statistics by Salary Period
+All statistics and breakdown commands support the `--period-type` parameter:
+* `calendar` — Force standard calendar month boundaries.
+* `salary` — Force salary period boundaries (using the active `salary-config` settings).
+* `default` — Dynamically resolve to your active `salary-config` mode:
+  - If mode is `calendar`, defaults to calendar months.
+  - If mode is `fixed` or `salary`, defaults to salary periods.
+
+For example, to query your housing category spending using the active salary period:
+```bash
+python cli.py stats-category Housing --period-type salary --month 2026-06
+```
+
+If you do not specify a `--period-type` flag, it will automatically default to the setting configured via `set-salary-mode`.
 
 ## Skill Contents
 

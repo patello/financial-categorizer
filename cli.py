@@ -478,11 +478,19 @@ def cmd_manual_match(args):
         db.disconnect()
 
 
+def resolve_period_type(db, arg_value):
+    if arg_value == "default":
+        mode = db.get_metadata("salary_period_mode", "fixed")
+        return "salary" if mode in ("fixed", "salary") else "calendar"
+    return arg_value
+
+
 def cmd_stats_summary(args):
     db = get_db(args.db)
     try:
+        pt = resolve_period_type(db, args.period_type)
         stats = Stats(db)
-        rows = stats.monthly_summary(month=args.month)
+        rows = stats.monthly_summary(month=args.month, period_type=pt)
         if not rows:
             print("No data found.")
             return
@@ -496,6 +504,7 @@ def cmd_stats_summary(args):
 def cmd_stats_category(args):
     db = get_db(args.db)
     try:
+        pt = resolve_period_type(db, args.period_type)
         cat = Categorizer(db)
         stats = Stats(db)
 
@@ -507,6 +516,7 @@ def cmd_stats_category(args):
         result = stats.category_total(
             lookup["id"], month=args.month,
             date_from=args.from_date, date_to=args.to_date,
+            period_type=pt,
         )
         print(f"{args.name}: total={result['total']:>10.2f}  count={result['count']}")
     finally:
@@ -516,6 +526,7 @@ def cmd_stats_category(args):
 def cmd_stats_trend(args):
     db = get_db(args.db)
     try:
+        pt = resolve_period_type(db, args.period_type)
         cat = Categorizer(db)
         stats = Stats(db)
 
@@ -527,6 +538,7 @@ def cmd_stats_trend(args):
         rows = stats.trend(
             lookup["id"],
             date_from=args.from_date, date_to=args.to_date,
+            period_type=pt,
         )
         if not rows:
             print("No data found.")
@@ -541,8 +553,9 @@ def cmd_stats_trend(args):
 def cmd_stats_top(args):
     db = get_db(args.db)
     try:
+        pt = resolve_period_type(db, args.period_type)
         stats = Stats(db)
-        rows = stats.top_spending(month=args.month, limit=args.limit)
+        rows = stats.top_spending(month=args.month, limit=args.limit, period_type=pt)
         if not rows:
             print("No spending data found.")
             return
@@ -786,8 +799,9 @@ def cmd_remove_transfer_rule(args):
 def cmd_stats_compare(args):
     db = get_db(args.db)
     try:
+        resolved_pt = resolve_period_type(db, args.period_type)
         stats = Stats(db)
-        result = stats.compare(period=args.month, period_type=args.period_type)
+        result = stats.compare(period=args.month, period_type=resolved_pt)
         if not result:
             print("Not enough data for comparison.")
             return
@@ -799,7 +813,7 @@ def cmd_stats_compare(args):
                       f"expenses={r['total_expenses']:>10.2f}  net={r['net']:>10.2f}")
             return
 
-        pt = "salary period" if args.period_type == "salary" else "month"
+        pt = "salary period" if resolved_pt == "salary" else "month"
         print(f"Period: {result['period']} ({pt})")
         print(f"  Income:   {result['total_income']:>10.2f}")
         print(f"  Expenses: {result['total_expenses']:>10.2f}")
@@ -997,6 +1011,8 @@ def main():
     # stats summary
     p_stats_summary = subparsers.add_parser("stats-summary", help="Monthly income/expenses/net")
     p_stats_summary.add_argument("--month", help="Filter to YYYY-MM")
+    p_stats_summary.add_argument("--period-type", choices=["calendar", "salary", "default"], default="default",
+                                 help="Period type: calendar, salary, or default (dynamically determined by active salary config)")
     p_stats_summary.set_defaults(func=cmd_stats_summary)
 
     # stats category
@@ -1005,6 +1021,8 @@ def main():
     p_stats_cat.add_argument("--month", help="Filter to YYYY-MM")
     p_stats_cat.add_argument("--from", dest="from_date", type=lambda s: __import__('datetime').date.fromisoformat(s), help="Start date (YYYY-MM-DD)")
     p_stats_cat.add_argument("--to", dest="to_date", type=lambda s: __import__('datetime').date.fromisoformat(s), help="End date (YYYY-MM-DD)")
+    p_stats_cat.add_argument("--period-type", choices=["calendar", "salary", "default"], default="default",
+                                 help="Period type: calendar, salary, or default (dynamically determined by active salary config)")
     p_stats_cat.set_defaults(func=cmd_stats_category)
 
     # stats trend
@@ -1012,12 +1030,16 @@ def main():
     p_stats_trend.add_argument("name", help="Category name")
     p_stats_trend.add_argument("--from", dest="from_date", type=lambda s: __import__('datetime').date.fromisoformat(s), help="Start date (YYYY-MM-DD)")
     p_stats_trend.add_argument("--to", dest="to_date", type=lambda s: __import__('datetime').date.fromisoformat(s), help="End date (YYYY-MM-DD)")
+    p_stats_trend.add_argument("--period-type", choices=["calendar", "salary", "default"], default="default",
+                                 help="Period type: calendar, salary, or default (dynamically determined by active salary config)")
     p_stats_trend.set_defaults(func=cmd_stats_trend)
 
     # stats top
     p_stats_top = subparsers.add_parser("stats-top", help="Top spending categories")
     p_stats_top.add_argument("--month", help="Filter to YYYY-MM")
     p_stats_top.add_argument("--limit", type=int, default=10, help="Max categories (default: 10)")
+    p_stats_top.add_argument("--period-type", choices=["calendar", "salary", "default"], default="default",
+                                 help="Period type: calendar, salary, or default (dynamically determined by active salary config)")
     p_stats_top.set_defaults(func=cmd_stats_top)
 
     # recalculate
@@ -1083,8 +1105,8 @@ def main():
     # stats-compare
     p_compare = subparsers.add_parser("stats-compare", help="Month-over-month comparison")
     p_compare.add_argument("--month", help="Period to compare (YYYY-MM, default: latest)")
-    p_compare.add_argument("--period-type", choices=["calendar", "salary"], default="calendar",
-                          help="Period type: calendar (1st-last) or salary (based on active salary config: fixed or salary)")
+    p_compare.add_argument("--period-type", choices=["calendar", "salary", "default"], default="default",
+                           help="Period type: calendar, salary, or default (dynamically determined by active salary config)")
     p_compare.set_defaults(func=cmd_stats_compare)
 
     # salary-config

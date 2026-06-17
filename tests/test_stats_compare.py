@@ -222,3 +222,56 @@ class TestConfigureSalary:
         jan_period = next(p for p in all_periods if p["period"] == "2026-01")
         # Should include Jan 10 and Jan 15, but NOT Jan 3
         assert jan_period["total_expenses"] == pytest.approx(-13000.0)
+
+    def test_global_stats_support_period_type(self, db):
+        """Test that stats-category, stats-trend, and stats-top support period_type='salary'."""
+        db.set_metadata("salary_period_mode", "fixed")
+        db.set_metadata("salary_period_fixed_day", "25")
+        
+        cur = db.get_cursor()
+        # Add a rent transaction on Feb 26th (belongs to salary period 2026-03, but calendar month 2026-02)
+        cur.execute("INSERT INTO transactions (account_id, date, amount, adjusted_amount, category_id, description) "
+                    "VALUES (1, '2026-02-26', -500, -500, 3, 'Rent')")
+        db.commit()
+        
+        stats = Stats(db)
+        
+        # 1. Test category_total in salary mode
+        res_salary = stats.category_total(3, month="2026-03", period_type="salary")
+        # Should include Feb 26 rent (-500) and Mar 15 rent (-8000) = -8500.0
+        assert res_salary["total"] == pytest.approx(-8500.0)
+        
+        # Test category_total in calendar mode
+        res_cal = stats.category_total(3, month="2026-03", period_type="calendar")
+        # Should only include Mar 15 rent (-8000) = -8000.0
+        assert res_cal["total"] == pytest.approx(-8000.0)
+
+        # 2. Test trend in salary mode
+        trend_sal = stats.trend(3, period_type="salary")
+        mar_trend_sal = next(t for t in trend_sal if t["month"] == "2026-03")
+        assert mar_trend_sal["total"] == pytest.approx(-8500.0)
+
+        # 3. Test top_spending in salary mode
+        top_sal = stats.top_spending(month="2026-03", period_type="salary")
+        rent_top_sal = next(t for t in top_sal if t["category_name"] == "Rent")
+        assert rent_top_sal["total"] == pytest.approx(-8500.0)
+
+    def test_dynamic_default_resolution(self, db):
+        """Test resolve_period_type helper behavior in cli.py."""
+        from cli import resolve_period_type
+        
+        # Case A: Mode is 'calendar', default resolves to 'calendar'
+        db.set_metadata("salary_period_mode", "calendar")
+        assert resolve_period_type(db, "default") == "calendar"
+        
+        # Case B: Mode is 'fixed', default resolves to 'salary'
+        db.set_metadata("salary_period_mode", "fixed")
+        assert resolve_period_type(db, "default") == "salary"
+        
+        # Case C: Mode is 'salary', default resolves to 'salary'
+        db.set_metadata("salary_period_mode", "salary")
+        assert resolve_period_type(db, "default") == "salary"
+        
+        # Case D: Explicit override remains untouched
+        assert resolve_period_type(db, "calendar") == "calendar"
+        assert resolve_period_type(db, "salary") == "salary"
