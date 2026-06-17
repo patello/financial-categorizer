@@ -52,9 +52,10 @@ jobs:
           echo "Changelog content:"
           cat changelog.txt
 
-      - name: Remove test files before publishing
+      - name: Remove non-production files before publishing
         run: |
-          rm -rf tests/ conftest.py .pytest_cache/
+          rm -rf tests/ conftest.py .pytest_cache/ __pycache__/ financial_categorizer/__pycache__/
+          rm -rf example_data/ todo.md .github/ .gitignore .clawignore
 
       - name: Publish to ClawHub
         env:
