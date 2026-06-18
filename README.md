@@ -124,7 +124,7 @@ The following commands require confirmation:
 | `stats-top [--period-type <type>]` | Top spending categories |
 | `stats-transfers [--month <YYYY-MM>] [--period-type <type>]` | Net capital transfers to external accounts |
 | `stats-cashflow [--month <YYYY-MM>] [--period-type <type>]` | Monthly cash flow summary (Operating, Transfers, Net) |
-| `link <from> [to] --type [--to-account <name_or_id>]` | Link transactions (specify `--to-account` for external transfers) |
+| `link <from> [to] --type [--to-account <name_or_id>] [--ratio <val> \| --ratio-to <val> \| --amount <val>] [--dry-run]` | Link transactions (specify `--to-account` for external transfers, or ratio/amount options to customize values; `--dry-run` to preview) |
 | `unlink <id> [--yes]` | Remove a link (requires confirmation or `-y`) |
 | `links` | List transaction links |
 | `auto-link [--dry-run] [--yes]` | Auto-detect and link internal transfers (requires confirmation or `-y` when not running dry-run) |

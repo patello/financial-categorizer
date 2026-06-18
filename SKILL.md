@@ -105,7 +105,7 @@ The following commands require confirmation:
 | `stats-top [--period-type <type>]` | Top spending categories sorted by total expenses |
 | `stats-transfers [--month <YYYY-MM>] [--period-type <type>]` | Net capital transfers to external accounts |
 | `stats-cashflow [--month <YYYY-MM>] [--period-type <type>]` | Monthly cash flow summary (Operating, Transfers, Net) |
-| `link <from_id> [to_id] --type [--to-account <name_or_id>]` | Link transactions (specify `--to-account` for external transfers) |
+| `link <from_id> [to_id] --type [--to-account <name_or_id>] [--ratio <val> \| --ratio-to <val> \| --amount <val>] [--dry-run]` | Link transactions (specify `--to-account` for external transfers, or ratio/amount options to customize values; `--dry-run` to preview) |
 | `unlink <id> [--yes]` | Remove a link (requires confirmation or `-y`) |
 | `links` | List all transaction links |
 | `auto-link [--dry-run] [--yes]` | Auto-detect and link internal transfers using transfer rules (requires confirmation or `-y` when not running dry-run) |
@@ -181,6 +181,52 @@ If you make a shared purchase (e.g., from the `Gemensamt` account, 50% ownership
    ```
    * *Effect*: Both sides of the transfer are neutralized to `0.00`, ensuring no false income or outflows are recorded.
    * *Note*: This step is skipped if the transfer has already been auto-linked.
+
+### How to Think About Reimbursements & Composite Transactions
+
+When working with transaction links, it is crucial to distinguish between the **raw bank ledger amount** (actual cash flow) and the **effective category/budgetary amount** (represented by the `adjusted_amount` column).
+
+#### The Core Principle
+Reimbursements are not new income; they are a return of capital.
+* If an expense is reimbursed, the net expense is zero.
+* The incoming reimbursement money is not labor/investment income; it simply offsets the expense.
+
+If you don't link them, your gross income and gross expenses will both be overstated by the reimbursement amount, distorting your reports.
+
+#### Composite Transactions (e.g. Reimbursement Baked into Salary)
+Often, a reimbursement is not a standalone transaction (like a Swish payment), but is packaged/baked into a larger composite transaction, such as a salary payment.
+For example, if your employer pays you a single amount of `57,683 SEK`, which contains:
+* `52,701.77 SEK` of actual labor income
+* `4,981.23 SEK` of expense reimbursement for a credit card charge
+
+To avoid distorting both income and expenses, you must split this composite transaction. In this system, you do this using **transaction links** with fractional ratios.
+
+#### Link Ratio Calculation Modes
+The `link` command provides three modes to simplify this:
+
+1. **Source Ratio (`--ratio <float>`)** - *Default*
+   Calculates the ratio relative to the source (`from_id`) transaction. Use when you want to allocate a direct fraction of the source.
+
+2. **Destination Ratio (`--ratio-to <float>`)**
+   Calculates the ratio relative to the destination (`to_id`) transaction.
+   * For example, to fully reimburse/zero out the `First Card` expense of `-4,981.23 SEK` from your salary, use:
+     ```bash
+     python cli.py link <salary_txn_id> <expense_txn_id> --type reimbursement --ratio-to 1.0
+     ```
+   * This automatically calculates the exact ratio ($4981.23 / 57683 \approx 0.086357$). It reduces the salary's `adjusted_amount` to `52,701.77 SEK` (reflecting your true labor income) and increases the credit card expense's `adjusted_amount` to `0.00 SEK` (reflecting your true net expense).
+
+3. **Exact Cash (`--amount <float>`)**
+   Specify the exact cash amount in SEK being reimbursed.
+   * For example, to link exactly `4,981.23 SEK`:
+     ```bash
+     python cli.py link <salary_txn_id> <expense_txn_id> --type reimbursement --amount 4981.23
+     ```
+
+#### Dry-run Previews
+Always run with the `--dry-run` flag first to preview the downstream `adjusted_amount` effects before committing changes to the database:
+```bash
+python cli.py link <from_id> <to_id> --type reimbursement --ratio-to 1.0 --dry-run
+```
 
 ## Tracking External Accounts
 

@@ -182,3 +182,83 @@ def test_cli_auto_link_interactive_no(temp_db, monkeypatch, capsys):
     cur.execute("SELECT COUNT(*) FROM transaction_links")
     assert cur.fetchone()[0] == 0
 
+
+def test_cli_link_modes(temp_db, monkeypatch, capsys):
+    aid = temp_db.add_account("Checking")
+    cur = temp_db.get_cursor()
+    cur.execute("UPDATE accounts SET ownership_ratio = 1.0 WHERE id = ?", (aid,))
+    
+    # Insert from transaction (salary) and to transaction (expense)
+    cur.execute("INSERT INTO transactions (account_id, date, description, amount) VALUES (?, '2026-05-22', 'Salary', 57683.0)", (aid,))
+    t_from = cur.lastrowid
+    cur.execute("INSERT INTO transactions (account_id, date, description, amount) VALUES (?, '2026-05-25', 'First Card', -4981.23)", (aid,))
+    t_to = cur.lastrowid
+    temp_db.commit()
+
+    # 1. Test dry-run with --ratio-to 1.0
+    test_args = ["cli.py", "--db", temp_db.db_file, "link", str(t_from), str(t_to), "--type", "reimbursement", "--ratio-to", "1.0", "--dry-run"]
+    monkeypatch.setattr(sys, "argv", test_args)
+    main()
+    
+    captured = capsys.readouterr()
+    assert "Link Preview (DRY RUN - NO CHANGES MADE):" in captured.out
+    assert "Calculated DB Ratio: 0.086355" in captured.out
+    # Verify no links in DB
+    cur.execute("SELECT COUNT(*) FROM transaction_links")
+    assert cur.fetchone()[0] == 0
+
+    # 2. Test actual link with --ratio-to 1.0
+    test_args = ["cli.py", "--db", temp_db.db_file, "link", str(t_from), str(t_to), "--type", "reimbursement", "--ratio-to", "1.0"]
+    monkeypatch.setattr(sys, "argv", test_args)
+    main()
+    
+    captured = capsys.readouterr()
+    assert "Link Preview:" in captured.out
+    assert "Created link" in captured.out
+    
+    # Verify link exists and ratio is correct in DB
+    cur.execute("SELECT ratio FROM transaction_links")
+    db_ratio = cur.fetchone()[0]
+    assert abs(db_ratio - 0.08635525) < 1e-6
+
+    # Verify transaction adjusted amounts recalculation
+    cur.execute("SELECT adjusted_amount FROM transactions WHERE id = ?", (t_from,))
+    assert abs(cur.fetchone()[0] - 52701.77) < 1e-2
+    cur.execute("SELECT adjusted_amount FROM transactions WHERE id = ?", (t_to,))
+    assert abs(cur.fetchone()[0] - 0.0) < 1e-2
+
+
+def test_cli_link_amount_mode(temp_db, monkeypatch, capsys):
+    aid = temp_db.add_account("Checking")
+    cur = temp_db.get_cursor()
+    cur.execute("UPDATE accounts SET ownership_ratio = 1.0 WHERE id = ?", (aid,))
+    
+    # Insert from transaction (salary) and to transaction (expense)
+    cur.execute("INSERT INTO transactions (account_id, date, description, amount) VALUES (?, '2026-05-22', 'Salary', 57683.0)", (aid,))
+    t_from = cur.lastrowid
+    cur.execute("INSERT INTO transactions (account_id, date, description, amount) VALUES (?, '2026-05-25', 'First Card', -4981.23)", (aid,))
+    t_to = cur.lastrowid
+    temp_db.commit()
+
+    # Link with exact amount
+    test_args = ["cli.py", "--db", temp_db.db_file, "link", str(t_from), str(t_to), "--type", "reimbursement", "--amount", "4981.23"]
+    monkeypatch.setattr(sys, "argv", test_args)
+    main()
+    
+    captured = capsys.readouterr()
+    assert "Calculated DB Ratio: 0.086355" in captured.out
+    
+    cur.execute("SELECT ratio FROM transaction_links")
+    db_ratio = cur.fetchone()[0]
+    assert abs(db_ratio - 0.08635525) < 1e-6
+
+
+def test_cli_link_mutually_exclusive(temp_db, monkeypatch, capsys):
+    test_args = ["cli.py", "--db", temp_db.db_file, "link", "1", "2", "--type", "reimbursement", "--ratio", "1.0", "--amount", "100.0"]
+    monkeypatch.setattr(sys, "argv", test_args)
+    
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+    assert exc_info.value.code in (2, 1)
+
+
