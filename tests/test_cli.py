@@ -355,5 +355,92 @@ def test_cli_uncategorized_non_zero(temp_db, monkeypatch, capsys):
     assert "Swish Reimbursed" not in captured.out
 
 
+def test_cli_rules_with_transaction_id(temp_db, monkeypatch, capsys):
+    aid = temp_db.add_account("Checking")
+    cur = temp_db.get_cursor()
+    
+    cur.execute("INSERT INTO categories (name) VALUES ('Food')")
+    cat_food = cur.lastrowid
+    
+    # Insert rule
+    cur.execute(
+        "INSERT INTO match_rules (category_id, pattern, match_type, enabled) "
+        "VALUES (?, 'ICA', 'contains', 1)",
+        (cat_food,),
+    )
+    rule_id = cur.lastrowid
+    
+    # Insert transactions
+    # 1. Rule-categorized
+    cur.execute(
+        "INSERT INTO transactions (account_id, date, description, amount, category_id, matched_rule_id) "
+        "VALUES (?, '2026-05-22', 'ICA Kvantum', -100.0, ?, ?)",
+        (aid, cat_food, rule_id),
+    )
+    t_rule = cur.lastrowid
+    
+    # 2. Manually categorized
+    cur.execute(
+        "INSERT INTO transactions (account_id, date, description, amount, category_id) "
+        "VALUES (?, '2026-05-23', 'Manual restaurant', -50.0, ?)",
+        (aid, cat_food),
+    )
+    t_manual = cur.lastrowid
+    cur.execute("INSERT INTO id_matches (transaction_id, category_id) VALUES (?, ?)", (t_manual, cat_food))
+    
+    # 3. Uncategorized
+    cur.execute(
+        "INSERT INTO transactions (account_id, date, description, amount) "
+        "VALUES (?, '2026-05-24', 'Uncategorized txn', -10.0)",
+        (aid,),
+    )
+    t_uncat = cur.lastrowid
+    
+    temp_db.commit()
+    
+    # A. Test rules general listing (shows rule)
+    test_args = ["cli.py", "--db", temp_db.db_file, "rules"]
+    monkeypatch.setattr(sys, "argv", test_args)
+    main()
+    captured = capsys.readouterr()
+    assert "/ICA/" in captured.out
+    
+    # B. Test rules <txn_id> with rule match
+    test_args = ["cli.py", "--db", temp_db.db_file, "rules", str(t_rule)]
+    monkeypatch.setattr(sys, "argv", test_args)
+    main()
+    captured = capsys.readouterr()
+    assert "ICA Kvantum" in captured.out
+    assert f"Status: Categorized by Rule #{rule_id}" in captured.out
+    assert "Pattern:    /ICA/" in captured.out
+    assert "Match Type: contains" in captured.out
+    
+    # C. Test rules <txn_id> with manual override
+    test_args = ["cli.py", "--db", temp_db.db_file, "rules", str(t_manual)]
+    monkeypatch.setattr(sys, "argv", test_args)
+    main()
+    captured = capsys.readouterr()
+    assert "Manual restaurant" in captured.out
+    assert "Status: Manually categorized (Override)" in captured.out
+    
+    # D. Test rules <txn_id> with uncategorized
+    test_args = ["cli.py", "--db", temp_db.db_file, "rules", str(t_uncat)]
+    monkeypatch.setattr(sys, "argv", test_args)
+    main()
+    captured = capsys.readouterr()
+    assert "Uncategorized txn" in captured.out
+    assert "Status: Uncategorized" in captured.out
+    
+    # E. Test rules <txn_id> with invalid txn_id (should fail)
+    test_args = ["cli.py", "--db", temp_db.db_file, "rules", "99999"]
+    monkeypatch.setattr(sys, "argv", test_args)
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert "Error: Transaction 99999 not found." in captured.err
+
+
+
 
 

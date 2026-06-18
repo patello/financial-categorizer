@@ -92,7 +92,7 @@ The following commands require confirmation:
 | `add-category <name> [--associated-account <name_or_id>]` | Create a new category, optionally associated with an external account |
 | `update-category <id> [--associated-account <name_or_id>]` | Update category parents or fields (use `none` to clear association) |
 | `delete-category <id> [--yes]` | Delete a category (requires confirmation or `-y`) |
-| `rules` | List all auto-categorization rules |
+| `rules [txn_id]` | List all match rules, or show the matching rule for a specific transaction |
 | `add-rule <cat_id> <pattern>` | Add a categorization rule (regex, contains, exact) |
 | `remove-rule <id> [--yes]` | Remove an auto-categorization rule (requires confirmation or `-y`) |
 | `preview <pattern>` | Preview which transactions match a pattern before adding a rule |

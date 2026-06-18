@@ -245,6 +245,24 @@ def cmd_delete_category(args):
 def cmd_rules(args):
     db = get_db(args.db)
     try:
+        if args.transaction_id is not None:
+            match = db.get_transaction_rule_match(args.transaction_id)
+            if not match:
+                print(f"Error: Transaction {args.transaction_id} not found.", file=sys.stderr)
+                sys.exit(1)
+
+            print(f"Transaction [{match['id']}] {match['date']}  {match['amount']:.2f} SEK  {match['description']}")
+            if match["source"] == "uncategorized":
+                print("Status: Uncategorized")
+            elif match["source"] == "manual":
+                print(f"Status: Manually categorized (Override) -> Category: [{match['category_id']}] {match['category_name']}")
+            elif match["source"] == "rule":
+                print(f"Status: Categorized by Rule #{match['rule_id']} -> Category: [{match['category_id']}] {match['category_name']}")
+                print("Rule Details:")
+                print(f"  Pattern:    /{match['rule_pattern']}/")
+                print(f"  Match Type: {match['rule_match_type']}")
+            return
+
         cat = Categorizer(db)
         rules = cat.list_rules()
 
@@ -1196,6 +1214,8 @@ def main():
 
     # rules
     p_rules = subparsers.add_parser("rules", help="List all match rules")
+    p_rules.add_argument("transaction_id", type=int, nargs="?",
+                         help="Optional transaction ID to show the matching rule for")
     p_rules.set_defaults(func=cmd_rules)
 
     # add-rule

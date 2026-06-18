@@ -111,7 +111,7 @@ The following commands require confirmation:
 | `add-category <name> [--associated-account <name_or_id>]` | Create a category, optionally associated with an external account |
 | `update-category <id> [--associated-account <name_or_id>]` | Update category fields (use `none` to clear association) |
 | `delete-category <id> [--yes]` | Delete a category (requires confirmation or `-y`) |
-| `rules` | List match rules |
+| `rules [transaction_id]` | List match rules, or show the matching rule for a specific transaction |
 | `add-rule <cat> <pattern>` | Add a categorization rule |
 | `remove-rule <id> [--yes]` | Remove a rule (requires confirmation or `-y`) |
 | `preview <pattern>` | Preview what a rule would match |

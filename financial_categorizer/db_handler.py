@@ -699,6 +699,64 @@ class DatabaseHandler:
             for row in cur.fetchall()
         ]
 
+    def get_transaction_rule_match(self, transaction_id: int) -> dict | None:
+        """Get the rule or manual match details that categorized a transaction.
+
+        Returns:
+            A dictionary with categorization explanation, or None if transaction not found.
+        """
+        cur = self.get_cursor()
+        cur.execute(
+            "SELECT t.id, t.date, t.description, t.amount, t.category_id, t.matched_rule_id, "
+            "       c.name AS category_name "
+            "FROM transactions t "
+            "LEFT JOIN categories c ON c.id = t.category_id "
+            "WHERE t.id = ?",
+            (transaction_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+
+        txn_id, txn_date, txn_desc, txn_amt, cat_id, rule_id, cat_name = row
+
+        # Check if it was manually overridden
+        cur.execute(
+            "SELECT category_id FROM id_matches WHERE transaction_id = ?",
+            (transaction_id,),
+        )
+        is_manual = cur.fetchone() is not None
+
+        source = "uncategorized"
+        rule_pattern = None
+        rule_match_type = None
+
+        if cat_id is not None:
+            if is_manual:
+                source = "manual"
+            elif rule_id is not None:
+                source = "rule"
+                cur.execute(
+                    "SELECT pattern, match_type FROM match_rules WHERE id = ?",
+                    (rule_id,),
+                )
+                rule_row = cur.fetchone()
+                if rule_row:
+                    rule_pattern, rule_match_type = rule_row
+
+        return {
+            "id": txn_id,
+            "date": txn_date,
+            "description": txn_desc,
+            "amount": txn_amt,
+            "category_id": cat_id,
+            "category_name": cat_name,
+            "source": source,
+            "rule_id": rule_id,
+            "rule_pattern": rule_pattern,
+            "rule_match_type": rule_match_type,
+        }
+
 
 # ------------------------------------------------------------------ #
 #  Transfer Manager
