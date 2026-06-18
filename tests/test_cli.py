@@ -441,6 +441,94 @@ def test_cli_rules_with_transaction_id(temp_db, monkeypatch, capsys):
     assert "Error: Transaction 99999 not found." in captured.err
 
 
+def test_cli_manual_unmatch(temp_db, monkeypatch, capsys):
+    aid = temp_db.add_account("Checking")
+    cur = temp_db.get_cursor()
+    
+    cur.execute("INSERT INTO categories (name, category_type, associated_account_id) VALUES ('Savings', 'transfer', ?)", (aid,))
+    cat_savings = cur.lastrowid
+    
+    cur.execute("INSERT INTO categories (name) VALUES ('Food')")
+    cat_food = cur.lastrowid
+    
+    # 1. Manually matched transaction (transfer type)
+    cur.execute(
+        "INSERT INTO transactions (account_id, date, description, amount, category_id) "
+        "VALUES (?, '2026-05-23', 'Transfer to savings', -500.0, ?)",
+        (aid, cat_savings),
+    )
+    t_manual = cur.lastrowid
+    cur.execute("INSERT INTO id_matches (transaction_id, category_id) VALUES (?, ?)", (t_manual, cat_savings))
+    cur.execute(
+        "INSERT INTO transaction_links (from_transaction_id, to_transaction_id, link_type, ratio, comment, to_account_id) "
+        "VALUES (?, NULL, 'external_transfer', 1.0, 'auto-linked via categorize', ?)",
+        (t_manual, aid),
+    )
+    
+    # 2. Rule matched transaction
+    cur.execute(
+        "INSERT INTO match_rules (category_id, pattern, match_type, enabled) "
+        "VALUES (?, 'ICA', 'contains', 1)",
+        (cat_food,),
+    )
+    rule_id = cur.lastrowid
+
+    cur.execute(
+        "INSERT INTO transactions (account_id, date, description, amount, category_id, matched_rule_id) "
+        "VALUES (?, '2026-05-22', 'ICA Kvantum', -100.0, ?, ?)",
+        (aid, cat_food, rule_id),
+    )
+    t_rule = cur.lastrowid
+    
+    # 3. Uncategorized transaction
+    cur.execute(
+        "INSERT INTO transactions (account_id, date, description, amount) "
+        "VALUES (?, '2026-05-24', 'Uncategorized txn', -10.0)",
+        (aid,),
+    )
+    t_uncat = cur.lastrowid
+    
+    temp_db.commit()
+    
+    # A. Test manual-unmatch on rule-matched (should fail)
+    test_args = ["cli.py", "--db", temp_db.db_file, "manual-unmatch", str(t_rule)]
+    monkeypatch.setattr(sys, "argv", test_args)
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert f"Error: Transaction {t_rule} does not have a manual categorization override." in captured.err
+    
+    # B. Test manual-unmatch on uncategorized (should fail)
+    test_args = ["cli.py", "--db", temp_db.db_file, "manual-unmatch", str(t_uncat)]
+    monkeypatch.setattr(sys, "argv", test_args)
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert f"Error: Transaction {t_uncat} does not have a manual categorization override." in captured.err
+
+    # C. Test manual-unmatch on manually matched (should succeed)
+    test_args = ["cli.py", "--db", temp_db.db_file, "manual-unmatch", str(t_manual)]
+    monkeypatch.setattr(sys, "argv", test_args)
+    main()
+    captured = capsys.readouterr()
+    assert f"Removed manual categorization override for transaction {t_manual}." in captured.out
+    
+    # Verify DB changes
+    cur.execute("SELECT category_id, matched_rule_id FROM transactions WHERE id = ?", (t_manual,))
+    row = cur.fetchone()
+    assert row[0] is None
+    assert row[1] is None
+    
+    cur.execute("SELECT category_id FROM id_matches WHERE transaction_id = ?", (t_manual,))
+    assert cur.fetchone() is None
+    
+    cur.execute("SELECT id FROM transaction_links WHERE from_transaction_id = ? AND link_type = 'external_transfer'", (t_manual,))
+    assert cur.fetchone() is None
+
+
+
 
 
 

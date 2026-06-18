@@ -312,6 +312,37 @@ class Categorizer:
         self._link_external_transfer(transaction_id, category_id, recalculate=True)
         return cur.lastrowid
 
+    def remove_manual_match(self, transaction_id: int) -> bool:
+        """Remove a manual match (id_match). Returns True if it existed and was removed."""
+        cur = self.db.get_cursor()
+        # Check if manual match exists
+        cur.execute(
+            "SELECT category_id FROM id_matches WHERE transaction_id = ?",
+            (transaction_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return False
+
+        # Delete from id_matches
+        cur.execute(
+            "DELETE FROM id_matches WHERE transaction_id = ?",
+            (transaction_id,),
+        )
+        # Reset transaction's category_id and matched_rule_id
+        cur.execute(
+            "UPDATE transactions SET category_id = NULL, matched_rule_id = NULL WHERE id = ?",
+            (transaction_id,),
+        )
+        # Delete auto-created external transfer links
+        cur.execute(
+            "DELETE FROM transaction_links WHERE from_transaction_id = ? AND link_type = 'external_transfer'",
+            (transaction_id,),
+        )
+        self.db.commit()
+        self.db.recalculate_adjusted_amounts()
+        return True
+
     # ------------------------------------------------------------------ #
     #  Queries
     # ------------------------------------------------------------------ #

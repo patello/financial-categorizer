@@ -100,6 +100,7 @@ The following commands require confirmation:
 | `uncategorized [--group] [--non-zero]` | List all uncategorized transactions |
 | `transactions [--category <name>] [--uncategorized] [--non-zero] [--account <name>] [--limit <n>]` | Search, list, and filter transactions |
 | `manual-match <txn_id> <cat_id>` | Manually assign a category override to a transaction |
+| `manual-unmatch <txn_id>` | Remove a manual categorization override |
 | `stats-summary [--period-type <type>]` | Monthly summary of income, expenses, and net |
 | `stats-category <name> [--period-type <type>]` | Category total with subcategory rollups |
 | `stats-trend <name> [--period-type <type>]` | Monthly trend for a category |

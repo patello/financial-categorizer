@@ -565,6 +565,19 @@ def cmd_manual_match(args):
         db.disconnect()
 
 
+def cmd_manual_unmatch(args):
+    db = get_db(args.db)
+    try:
+        cat = Categorizer(db)
+        if cat.remove_manual_match(args.transaction):
+            print(f"Removed manual categorization override for transaction {args.transaction}.")
+        else:
+            print(f"Error: Transaction {args.transaction} does not have a manual categorization override.", file=sys.stderr)
+            sys.exit(1)
+    finally:
+        db.disconnect()
+
+
 def resolve_account_id(db, name_or_id: str) -> int:
     """Resolve an account name or ID to an account ID."""
     if not name_or_id:
@@ -1268,6 +1281,11 @@ def main():
     p_manual.add_argument("transaction", type=int, help="Transaction ID")
     p_manual.add_argument("category", type=int, help="Category ID")
     p_manual.set_defaults(func=cmd_manual_match)
+
+    # manual-unmatch
+    p_manual_unmatch = subparsers.add_parser("manual-unmatch", help="Remove a manual categorization override")
+    p_manual_unmatch.add_argument("transaction", type=int, help="Transaction ID")
+    p_manual_unmatch.set_defaults(func=cmd_manual_unmatch)
 
     # stats summary
     p_stats_summary = subparsers.add_parser("stats-summary", help="Monthly income/expenses/net")
