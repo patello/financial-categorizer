@@ -677,13 +677,98 @@ def cmd_link(args):
         to_account_id = None
         if args.to_account:
             to_account_id = resolve_account_id(db, args.to_account)
-        tm = TransferManager(db)
-        link_id = tm.link_transactions(
-            args.from_id, args.to_id, args.type,
-            ratio=args.ratio, comment=args.comment,
-            to_account_id=to_account_id,
+
+        cur = db.get_cursor()
+
+        # Get from_txn details
+        cur.execute(
+            "SELECT t.amount, a.ownership_ratio, t.description, t.date, a.name "
+            "FROM transactions t JOIN accounts a ON t.account_id = a.id WHERE t.id = ?",
+            (args.from_id,)
         )
-        print(f"Created link {link_id} ({args.type})")
+        from_row = cur.fetchone()
+        if not from_row:
+            print(f"Error: from_transaction_id {args.from_id} not found", file=sys.stderr)
+            sys.exit(1)
+        from_amount, from_ownership, from_desc, from_date, from_acct_name = from_row
+
+        # Get to_txn details if to_id is present
+        to_amount, to_ownership, to_desc, to_date, to_acct_name = 0.0, 1.0, "", "", ""
+        if args.to_id is not None:
+            cur.execute(
+                "SELECT t.amount, a.ownership_ratio, t.description, t.date, a.name "
+                "FROM transactions t JOIN accounts a ON t.account_id = a.id WHERE t.id = ?",
+                (args.to_id,)
+            )
+            to_row = cur.fetchone()
+            if not to_row:
+                print(f"Error: to_transaction_id {args.to_id} not found", file=sys.stderr)
+                sys.exit(1)
+            to_amount, to_ownership, to_desc, to_date, to_acct_name = to_row
+
+        # Enforce ratio_to validations
+        if args.ratio_to is not None and args.to_id is None:
+            print("Error: --ratio-to requires a destination transaction (to_id)", file=sys.stderr)
+            sys.exit(1)
+
+        # Resolve which mode was used and compute final ratio
+        ratio = 1.0
+        if args.ratio is not None:
+            ratio = args.ratio
+        elif args.ratio_to is not None:
+            if from_amount == 0:
+                print("Error: from_transaction amount is 0, cannot calculate ratio-to", file=sys.stderr)
+                sys.exit(1)
+            ratio = (abs(to_amount) * args.ratio_to) / from_amount
+        elif args.amount is not None:
+            if from_amount == 0:
+                print("Error: from_transaction amount is 0, cannot calculate ratio from amount", file=sys.stderr)
+                sys.exit(1)
+            ratio = args.amount / from_amount
+
+        # Determine labels for output
+        dry_run_str = " (DRY RUN - NO CHANGES MADE)" if args.dry_run else ""
+        print(f"Link Preview{dry_run_str}:")
+        print(f"  Type: {args.type}")
+        print(f"  From Transaction: [{args.from_id}] {from_date} | {from_desc} | {from_amount:.2f} SEK (ownership: {from_ownership * 100:.0f}%, account: {from_acct_name})")
+        if args.to_id is not None:
+            print(f"  To Transaction:   [{args.to_id}] {to_date} | {to_desc} | {to_amount:.2f} SEK (ownership: {to_ownership * 100:.0f}%, account: {to_acct_name})")
+        print(f"  Calculated DB Ratio: {ratio:.6f}")
+
+        # Downstream effects calculation
+        from_base = from_amount * from_ownership
+        to_base = to_amount * to_ownership
+        
+        if args.type == "reimbursement":
+            from_change = -(from_amount * from_ownership * ratio)
+            to_change = from_amount * to_ownership * ratio
+            from_new = from_base + from_change
+            to_new = to_base + to_change
+        elif args.type == "internal_transfer":
+            from_change = -(from_base * ratio)
+            to_change = -(to_base * ratio)
+            from_new = from_base + from_change
+            to_new = to_base + to_change
+        else: # external_transfer
+            from_change = -from_base
+            from_new = 0.0
+            to_change = 0.0
+            to_new = 0.0
+
+        print("\nDownstream Effects (adjusted_amount):")
+        print(f"  From [{args.from_id}]: {from_base:10.2f} SEK  ==> {from_new:10.2f} SEK  ({from_change:+.2f} SEK)")
+        if args.to_id is not None:
+            print(f"  To   [{args.to_id}]: {to_base:10.2f} SEK  ==> {to_new:10.2f} SEK  ({to_change:+.2f} SEK)")
+        print()
+
+        if not args.dry_run:
+            tm = TransferManager(db)
+            link_id = tm.link_transactions(
+                args.from_id, args.to_id, args.type,
+                ratio=ratio, comment=args.comment,
+                to_account_id=to_account_id,
+            )
+            print(f"Created link {link_id} ({args.type})")
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
@@ -1164,9 +1249,15 @@ def main():
     p_link.add_argument("from_id", type=int, help="From transaction ID")
     p_link.add_argument("to_id", type=int, nargs="?", default=None, help="To transaction ID (not needed for external_transfer)")
     p_link.add_argument("--type", required=True, choices=["internal_transfer", "external_transfer", "reimbursement"], help="Link type")
-    p_link.add_argument("--ratio", type=float, default=1.0, help="Ratio (default: 1.0)")
+    
+    group = p_link.add_mutually_exclusive_group()
+    group.add_argument("--ratio", type=float, help="Ratio relative to from_transaction (default: 1.0 if no other mode is specified)")
+    group.add_argument("--ratio-to", type=float, help="Ratio relative to to_transaction")
+    group.add_argument("--amount", type=float, help="Exact cash/SEK amount to link/reimburse")
+
     p_link.add_argument("--comment", help="Comment")
     p_link.add_argument("--to-account", help="Target external account name or ID (only for external_transfer)")
+    p_link.add_argument("--dry-run", action="store_true", help="Preview downstream changes without modifying the database")
     p_link.set_defaults(func=cmd_link)
 
     # unlink
