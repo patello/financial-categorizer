@@ -98,6 +98,7 @@ The following commands require confirmation:
 | `preview <pattern>` | Preview which transactions match a pattern before adding a rule |
 | `categorize [--all]` | Run auto-categorization rules |
 | `uncategorized` | List all uncategorized transactions |
+| `transactions [--category <name>] [--uncategorized] [--non-zero] [--account <name>] [--limit <n>]` | Search, list, and filter transactions |
 | `manual-match <txn_id> <cat_id>` | Manually assign a category override to a transaction |
 | `stats-summary [--period-type <type>]` | Monthly summary of income, expenses, and net |
 | `stats-category <name> [--period-type <type>]` | Category total with subcategory rollups |

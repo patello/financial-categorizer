@@ -640,6 +640,65 @@ class DatabaseHandler:
         self.commit()
         return cur.rowcount > 0
 
+    def get_transactions(
+        self,
+        category_id: int | None = None,
+        uncategorized_only: bool = False,
+        non_zero: bool = False,
+        account_id: int | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """Query transactions from the database with optional filters.
+
+        Args:
+            category_id: Filter by category ID.
+            uncategorized_only: If True, only return transactions with category_id IS NULL.
+            non_zero: If True, exclude transactions with adjusted_amount = 0.
+            account_id: Filter by account ID.
+            limit: Maximum number of transactions to return.
+
+        Returns:
+            List of transaction dictionaries.
+        """
+        sql = """
+            SELECT t.id, t.date, t.description, t.amount, t.adjusted_amount,
+                   t.category_id, c.name AS category_name, a.name AS account_name
+            FROM transactions t
+            JOIN accounts a ON a.id = t.account_id
+            LEFT JOIN categories c ON c.id = t.category_id
+            WHERE 1=1
+        """
+        params = []
+        if category_id is not None:
+            sql += " AND t.category_id = ?"
+            params.append(category_id)
+        if uncategorized_only:
+            sql += " AND t.category_id IS NULL"
+        if non_zero:
+            sql += " AND (t.adjusted_amount IS NULL OR t.adjusted_amount != 0)"
+        if account_id is not None:
+            sql += " AND t.account_id = ?"
+            params.append(account_id)
+
+        sql += " ORDER BY t.date DESC, t.id DESC LIMIT ?"
+        params.append(limit)
+
+        cur = self.get_cursor()
+        cur.execute(sql, tuple(params))
+        return [
+            {
+                "id": row[0],
+                "date": row[1],
+                "description": row[2],
+                "amount": row[3],
+                "adjusted_amount": row[4],
+                "category_id": row[5],
+                "category_name": row[6],
+                "account_name": row[7],
+            }
+            for row in cur.fetchall()
+        ]
+
 
 # ------------------------------------------------------------------ #
 #  Transfer Manager

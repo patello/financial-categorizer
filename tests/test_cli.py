@@ -262,3 +262,53 @@ def test_cli_link_mutually_exclusive(temp_db, monkeypatch, capsys):
     assert exc_info.value.code in (2, 1)
 
 
+def test_cli_transactions(temp_db, monkeypatch, capsys):
+    aid = temp_db.add_account("Checking")
+    cur = temp_db.get_cursor()
+    
+    cur.execute("INSERT INTO categories (name) VALUES ('Food')")
+    cat_food = cur.lastrowid
+    
+    # Insert transactions
+    cur.execute(
+        "INSERT INTO transactions (account_id, date, description, amount, adjusted_amount, category_id) "
+        "VALUES (?, '2026-05-22', 'ICA Kvantum', -100.0, -100.0, ?)",
+        (aid, cat_food),
+    )
+    cur.execute(
+        "INSERT INTO transactions (account_id, date, description, amount, adjusted_amount) "
+        "VALUES (?, '2026-05-23', 'Uncat purchase', -50.0, -50.0)",
+        (aid,),
+    )
+    temp_db.commit()
+    
+    # 1. Test basic listing
+    test_args = ["cli.py", "--db", temp_db.db_file, "transactions", "--limit", "10"]
+    monkeypatch.setattr(sys, "argv", test_args)
+    main()
+    captured = capsys.readouterr()
+    assert "Transactions (2):" in captured.out
+    assert "ICA Kvantum" in captured.out
+    assert "Uncat purchase" in captured.out
+
+    # 2. Test filtering by category
+    test_args = ["cli.py", "--db", temp_db.db_file, "transactions", "--category", "Food"]
+    monkeypatch.setattr(sys, "argv", test_args)
+    main()
+    captured = capsys.readouterr()
+    assert "Transactions (1):" in captured.out
+    assert "ICA Kvantum" in captured.out
+    assert "Uncat purchase" not in captured.out
+
+    # 3. Test filtering by uncategorized
+    test_args = ["cli.py", "--db", temp_db.db_file, "transactions", "--uncategorized"]
+    monkeypatch.setattr(sys, "argv", test_args)
+    main()
+    captured = capsys.readouterr()
+    assert "Transactions (1):" in captured.out
+    assert "Uncat purchase" in captured.out
+    assert "ICA Kvantum" not in captured.out
+
+
+
+

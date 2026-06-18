@@ -214,3 +214,67 @@ class TestDatabaseHandler:
         assert cur.fetchone()[0] == 0
         cur.execute("SELECT COUNT(*) FROM transaction_links WHERE from_transaction_id = 9999")
         assert cur.fetchone()[0] == 0
+
+    def test_get_transactions(self, db):
+        aid1 = db.add_account("Checking")
+        aid2 = db.add_account("Savings")
+        
+        cur = db.get_cursor()
+        cur.execute("INSERT INTO categories (name) VALUES ('Food')")
+        cat_food = cur.lastrowid
+        cur.execute("INSERT INTO categories (name) VALUES ('Rent')")
+        cat_rent = cur.lastrowid
+        
+        # Add a few transactions
+        cur.execute(
+            "INSERT INTO transactions (date, description, amount, adjusted_amount, account_id) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (date(2024, 1, 1), "Grocery Store", -100.0, -100.0, aid1),
+        )
+        t1 = cur.lastrowid
+        
+        cur.execute(
+            "INSERT INTO transactions (date, description, amount, adjusted_amount, category_id, account_id) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (date(2024, 1, 2), "Restaurant", -50.0, -50.0, cat_food, aid1),
+        )
+        t2 = cur.lastrowid
+        
+        cur.execute(
+            "INSERT INTO transactions (date, description, amount, adjusted_amount, category_id, account_id) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (date(2024, 1, 3), "Rent payment", -1000.0, 0.0, cat_rent, aid2),
+        )
+        t3 = cur.lastrowid
+        
+        db.commit()
+
+        # Query all
+        txns = db.get_transactions()
+        assert len(txns) == 3
+        assert txns[0]["id"] == t3
+        assert txns[1]["id"] == t2
+        assert txns[2]["id"] == t1
+        
+        # Filter by category
+        txns_food = db.get_transactions(category_id=cat_food)
+        assert len(txns_food) == 1
+        assert txns_food[0]["id"] == t2
+        assert txns_food[0]["category_name"] == "Food"
+        
+        # Filter uncategorized
+        txns_uncat = db.get_transactions(uncategorized_only=True)
+        assert len(txns_uncat) == 1
+        assert txns_uncat[0]["id"] == t1
+        assert txns_uncat[0]["category_name"] is None
+        
+        # Filter non-zero
+        txns_nonzero = db.get_transactions(non_zero=True)
+        assert len(txns_nonzero) == 2
+        assert t3 not in [t["id"] for t in txns_nonzero]
+        
+        # Filter by account
+        txns_savings = db.get_transactions(account_id=aid2)
+        assert len(txns_savings) == 1
+        assert txns_savings[0]["id"] == t3
+

@@ -367,6 +367,47 @@ def cmd_categorize(args):
         db.disconnect()
 
 
+def cmd_transactions(args):
+    db = get_db(args.db)
+    try:
+        category_id = None
+        if args.category:
+            cat = Categorizer(db)
+            lookup = cat.get_category_by_name(args.category)
+            if not lookup:
+                print(f"Error: Category '{args.category}' not found.", file=sys.stderr)
+                sys.exit(1)
+            category_id = lookup["id"]
+
+        account_id = None
+        if args.account:
+            lookup = db.get_account_by_name(args.account)
+            if not lookup:
+                print(f"Error: Account '{args.account}' not found.", file=sys.stderr)
+                sys.exit(1)
+            account_id = lookup["id"]
+
+        txns = db.get_transactions(
+            category_id=category_id,
+            uncategorized_only=args.uncategorized,
+            non_zero=args.non_zero,
+            account_id=account_id,
+            limit=args.limit,
+        )
+
+        if not txns:
+            print("No transactions found.")
+            return
+
+        print(f"Transactions ({len(txns)}):")
+        for t in txns:
+            cat_str = f" [{t['category_name']}]" if t['category_name'] else " [Uncategorized]"
+            adj_str = f" (adj: {t['adjusted_amount']:.2f})" if abs(t['adjusted_amount'] - t['amount']) > 1e-4 else ""
+            print(f"  [{t['id']}] {t['date']}  {t['amount']:>10.2f} SEK{adj_str:<17}  {t['account_name']:<15} {cat_str:<18}  {t['description']}")
+    finally:
+        db.disconnect()
+
+
 def cmd_uncategorized(args):
     db = get_db(args.db)
     try:
@@ -1181,6 +1222,15 @@ def main():
     p_cat = subparsers.add_parser("categorize", help="Categorize transactions")
     p_cat.add_argument("--all", action="store_true", help="Re-categorize all transactions")
     p_cat.set_defaults(func=cmd_categorize)
+
+    # transactions
+    p_txns = subparsers.add_parser("transactions", help="Search and list transactions")
+    p_txns.add_argument("--category", help="Filter by category name")
+    p_txns.add_argument("--uncategorized", action="store_true", help="Show only uncategorized transactions")
+    p_txns.add_argument("--non-zero", action="store_true", help="Exclude transactions with adjusted_amount = 0")
+    p_txns.add_argument("--account", help="Filter by account name")
+    p_txns.add_argument("--limit", type=int, default=50, help="Maximum number of transactions to return (default: 50)")
+    p_txns.set_defaults(func=cmd_transactions)
 
     # uncategorized
     p_uncat = subparsers.add_parser("uncategorized", help="Show uncategorized transactions")
