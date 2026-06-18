@@ -531,6 +531,36 @@ class TestUncategorizedGrouped:
         assert groups[1]["description"] == "ATM Withdrawal"
         assert groups[1]["count"] == 2
 
+    def test_get_uncategorized_grouped_non_zero(self, db):
+        cat = Categorizer(db)
+        a1 = db.add_account("Checking")
+        
+        # Insert uncategorized transactions, some with adjusted_amount = 0 (reimbursed)
+        db.get_cursor().execute(
+            "INSERT INTO transactions (date, description, amount, adjusted_amount, account_id) VALUES (?, ?, ?, ?, ?)",
+            (date(2026, 1, 1), "Swish Person A", -100.0, -100.0, a1),
+        )
+        db.get_cursor().execute(
+            "INSERT INTO transactions (date, description, amount, adjusted_amount, account_id) VALUES (?, ?, ?, ?, ?)",
+            (date(2026, 1, 1), "Swish Person A", -50.0, 0.0, a1), # zero sum!
+        )
+        db.get_cursor().execute(
+            "INSERT INTO transactions (date, description, amount, adjusted_amount, account_id) VALUES (?, ?, ?, ?, ?)",
+            (date(2026, 1, 2), "ATM Withdrawal", -200.0, -200.0, a1),
+        )
+        db.commit()
+        
+        # Without non_zero=True, both appear
+        groups_all = cat.get_uncategorized_grouped(non_zero=False)
+        assert len(groups_all) == 2
+        
+        # With non_zero=True, zero sum is filtered out
+        groups_nonzero = cat.get_uncategorized_grouped(non_zero=True)
+        assert len(groups_nonzero) == 2
+        swish_group = next(g for g in groups_nonzero if g["description"] == "Swish Person A")
+        assert swish_group["count"] == 1
+        assert swish_group["total"] == pytest.approx(-100.0)
+
     def test_empty_when_all_categorized(self, db):
         cat = Categorizer(db)
         assert cat.get_uncategorized_grouped() == []

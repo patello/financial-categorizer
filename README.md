@@ -116,7 +116,7 @@ The following commands require confirmation:
 | `remove-rule <id> [--yes]` | Remove a rule (requires confirmation or `-y`) |
 | `preview <pattern>` | Preview what a rule would match |
 | `categorize [--all]` | Run auto-categorization |
-| `uncategorized` | Show uncategorized transactions |
+| `uncategorized [--group] [--non-zero]` | Show uncategorized transactions |
 | `transactions [--category <name>] [--uncategorized] [--non-zero] [--account <name>] [--limit <n>]` | Search and list transactions |
 | `manual-match <txn> <cat>` | Manually assign a category |
 | `stats-summary [--period-type <type>]` | Monthly income/expenses/net |

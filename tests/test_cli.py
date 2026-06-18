@@ -310,5 +310,50 @@ def test_cli_transactions(temp_db, monkeypatch, capsys):
     assert "ICA Kvantum" not in captured.out
 
 
+def test_cli_uncategorized_non_zero(temp_db, monkeypatch, capsys):
+    aid = temp_db.add_account("Checking")
+    cur = temp_db.get_cursor()
+    
+    # Insert uncategorized transactions, one non-zero and one zero adjusted_amount
+    cur.execute(
+        "INSERT INTO transactions (account_id, date, description, amount, adjusted_amount) "
+        "VALUES (?, '2026-05-23', 'Flat Purchase', -50.0, -50.0)",
+        (aid,),
+    )
+    cur.execute(
+        "INSERT INTO transactions (account_id, date, description, amount, adjusted_amount) "
+        "VALUES (?, '2026-05-24', 'Swish Reimbursed', 50.0, 0.0)",
+        (aid,),
+    )
+    temp_db.commit()
+    
+    # 1. Test basic listing (shows both)
+    test_args = ["cli.py", "--db", temp_db.db_file, "uncategorized"]
+    monkeypatch.setattr(sys, "argv", test_args)
+    main()
+    captured = capsys.readouterr()
+    assert "Uncategorized transactions (2):" in captured.out
+    assert "Flat Purchase" in captured.out
+    assert "Swish Reimbursed" in captured.out
+    
+    # 2. Test --non-zero listing (shows only non-zero)
+    test_args = ["cli.py", "--db", temp_db.db_file, "uncategorized", "--non-zero"]
+    monkeypatch.setattr(sys, "argv", test_args)
+    main()
+    captured = capsys.readouterr()
+    assert "Uncategorized transactions (1):" in captured.out
+    assert "Flat Purchase" in captured.out
+    assert "Swish Reimbursed" not in captured.out
+
+    # 3. Test grouped --non-zero listing
+    test_args = ["cli.py", "--db", temp_db.db_file, "uncategorized", "--group", "--non-zero"]
+    monkeypatch.setattr(sys, "argv", test_args)
+    main()
+    captured = capsys.readouterr()
+    assert "Uncategorized by description (1 groups):" in captured.out
+    assert "Flat Purchase" in captured.out
+    assert "Swish Reimbursed" not in captured.out
+
+
 
 

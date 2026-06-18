@@ -97,7 +97,7 @@ The following commands require confirmation:
 | `remove-rule <id> [--yes]` | Remove an auto-categorization rule (requires confirmation or `-y`) |
 | `preview <pattern>` | Preview which transactions match a pattern before adding a rule |
 | `categorize [--all]` | Run auto-categorization rules |
-| `uncategorized` | List all uncategorized transactions |
+| `uncategorized [--group] [--non-zero]` | List all uncategorized transactions |
 | `transactions [--category <name>] [--uncategorized] [--non-zero] [--account <name>] [--limit <n>]` | Search, list, and filter transactions |
 | `manual-match <txn_id> <cat_id>` | Manually assign a category override to a transaction |
 | `stats-summary [--period-type <type>]` | Monthly summary of income, expenses, and net |
@@ -181,7 +181,27 @@ If you make a shared purchase (e.g., from the `Gemensamt` account, 50% ownership
    python cli.py --db data/finance.db link <transfer_out_id> <transfer_in_id> --type internal_transfer
    ```
    * *Effect*: Both sides of the transfer are neutralized to `0.00`, ensuring no false income or outflows are recorded.
-   * *Note*: This step is skipped if the transfer has already been auto-linked.
+    * *Note*: This step is skipped if the transfer has already been auto-linked.
+
+### Managing Pending Reimbursements (Unlinked Inflows)
+
+#### Option A: Flat List Workflow (Keeping Them Uncategorized)
+Use the `--non-zero` flag on the `uncategorized` command to show pending actions (positive inflows to link, negative expenses to categorize):
+```bash
+python cli.py uncategorized --non-zero
+```
+
+#### Option B: Dedicated Category Workflow (Filtering Positive Inflows Only)
+To auto-route only positive inflows (like Swish reimbursements) to a category (e.g., ID `9`) while leaving negative outflows uncategorized, add a rule with a minimum amount filter:
+```bash
+python cli.py add-rule 9 "Swish" --type contains --amount-min 0.01
+```
+
+Query unlinked/pending reimbursements using:
+```bash
+python cli.py transactions --category Reimbursements --non-zero
+```
+*(Once linked, the adjusted amount drops to `0.00` and the transaction disappears from both lists).*
 
 ### How to Think About Reimbursements & Composite Transactions
 
