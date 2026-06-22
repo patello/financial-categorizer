@@ -289,6 +289,7 @@ class CSVImporter:
                     )
                     imported += 1
                     details_new.append({
+                        "id": cur.lastrowid,
                         "date": txn_date,
                         "description": description,
                         "amount": amount,

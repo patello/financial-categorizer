@@ -103,8 +103,11 @@ def cmd_import(args):
                         print(f"[SETTLED] {s['date']} | {s['description']} | {s['amount']:.2f} SEK (Matched pending transaction)")
 
                 # 3. Print newly imported transactions (for default and verbose modes)
+                new_txn_ids = {n["id"] for name, result in all_file_results for n in result["details"]["new"]}
                 if cat_result and "categorized_details" in cat_result:
                     for c in cat_result["categorized_details"]:
+                        if c["id"] not in new_txn_ids:
+                            continue
                         date_str = c["date"]
                         desc = c["description"]
                         amt = c["amount"]
