@@ -133,7 +133,7 @@ class Categorizer:
 
         Skips transactions that already have a category (rule or manual).
 
-        Returns a dict with counts: {'matched': int, 'unmatched': int}
+        Returns a dict with counts and detail lists: {'matched': int, 'unmatched': int, 'categorized_details': list}
         """
         cur = self.db.get_cursor()
         cur.execute(
@@ -150,7 +150,37 @@ class Categorizer:
         if matched > 0:
             self.db.recalculate_adjusted_amounts()
 
-        return {"matched": matched, "unmatched": len(uncategorized) - matched}
+        categorized_details = []
+        if uncategorized:
+            placeholders = ",".join("?" for _ in uncategorized)
+            cur.execute(
+                f"SELECT t.id, t.date, t.description, t.amount, c.name, r.pattern, r.match_type, r.priority "
+                f"FROM transactions t "
+                f"LEFT JOIN categories c ON t.category_id = c.id "
+                f"LEFT JOIN match_rules r ON t.matched_rule_id = r.id "
+                f"WHERE t.id IN ({placeholders})",
+                uncategorized
+            )
+            for row in cur.fetchall():
+                t_id, t_date, t_desc, t_amount, cat_name, r_pat, r_type, r_prio = row
+                is_manual = (cat_name is not None) and (r_pat is None)
+                categorized_details.append({
+                    "id": t_id,
+                    "date": t_date,
+                    "description": t_desc,
+                    "amount": t_amount,
+                    "category_name": cat_name,
+                    "rule_pattern": r_pat,
+                    "rule_type": r_type,
+                    "rule_priority": r_prio,
+                    "is_manual": is_manual,
+                })
+
+        return {
+            "matched": matched,
+            "unmatched": len(uncategorized) - matched,
+            "categorized_details": categorized_details
+        }
 
     def categorize_all(self) -> dict:
         """Re-categorize ALL transactions using current rules.

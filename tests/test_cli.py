@@ -528,6 +528,69 @@ def test_cli_manual_unmatch(temp_db, monkeypatch, capsys):
     assert cur.fetchone() is None
 
 
+def test_cli_import_verbosity(temp_db, monkeypatch, capsys, tmp_path):
+    # Setup category and rule
+    cat = Categorizer(temp_db)
+    cid = cat.add_category("Food")
+    cat.add_rule(cid, "ICA", match_type="regex")
+
+    # Create CSV file with 1 new matched, 1 new uncategorized, 1 error
+    csv_file = tmp_path / "test_nordea.csv"
+    csv_file.write_text(
+        "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
+        "2024-01-04;-500,00;1111;;;ICA Store;999,99;SEK\n"  # new matched (Food)
+        "2024-01-04;-100,00;1111;;;Other store;999,99;SEK\n" # new uncategorized
+        "invalid-row;abc;;;;;;\n"                            # error
+    , encoding="utf-8-sig")
+
+    # 1. Test Default Behavior (no verbosity flags)
+    test_args = ["cli.py", "--db", temp_db.db_file, "import", str(csv_file)]
+    monkeypatch.setattr(sys, "argv", test_args)
+    main()
+    captured = capsys.readouterr()
+    assert "[NEW] 2024-01-04 | ICA Store | -500.00 SEK -> Food" in captured.out
+    assert "[NEW] 2024-01-04 | Other store | -100.00 SEK -> [Uncategorized]" in captured.out
+    assert "Total: 2 imported, 0 skipped, 1 errors" in captured.out
+    assert "[ERROR] Row in test_nordea.csv" in captured.err
+
+    # 2. Test Quiet Mode (-q)
+    # We clear the transactions from db to test importing again
+    cur = temp_db.get_cursor()
+    cur.execute("DELETE FROM transactions")
+    temp_db.commit()
+    
+    test_args = ["cli.py", "--db", temp_db.db_file, "import", "-q", str(csv_file)]
+    monkeypatch.setattr(sys, "argv", test_args)
+    main()
+    captured = capsys.readouterr()
+    assert captured.out == ""  # Absolutely silent on stdout
+    assert "[ERROR] Row in test_nordea.csv" in captured.err  # Errors still print to stderr
+
+    # 3. Test Compact Mode (-c)
+    # Run import again without clearing. The rows will now be duplicates (skipped).
+    test_args = ["cli.py", "--db", temp_db.db_file, "import", "-c", str(csv_file)]
+    monkeypatch.setattr(sys, "argv", test_args)
+    main()
+    captured = capsys.readouterr()
+    # Skip details should not be listed individually in compact mode
+    assert "[SKIP]" not in captured.out
+    assert "[NEW]" not in captured.out
+    assert "Total: 0 imported, 2 skipped, 1 errors" in captured.out
+    assert "[ERROR] Row in test_nordea.csv" in captured.err
+
+    # 4. Test Verbose Mode (-v)
+    test_args = ["cli.py", "--db", temp_db.db_file, "import", "-v", str(csv_file)]
+    monkeypatch.setattr(sys, "argv", test_args)
+    main()
+    captured = capsys.readouterr()
+    assert "[SKIP]" in captured.out
+    assert "[ERROR]" not in captured.out  # errors are in stderr, not stdout
+    assert "[ERROR] Row in test_nordea.csv" in captured.err
+    assert "UNIQUE constraint" in captured.out
+    assert "Total: 0 imported, 2 skipped, 1 errors" in captured.out
+
+
+
 
 
 

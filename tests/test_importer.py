@@ -351,11 +351,11 @@ class TestPendingTransactions:
         today = date.today().isoformat()
         pending_csv = (
             "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
-            "Reserverat;-33,86;1111 11 11111;;;Reservation Kortköp Coop Reimershol;999,99;SEK\n"
+            "Reserverat;-33,86;1111 11 11111;;;Reservation Kortköp Coop Generic;999,99;SEK\n"
         )
         settled_csv = (
             "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
-            f"{today};-33,00;1111 11 11111;;;Kortköp 260409 COOP REIMERSHOLME;999,99;SEK\n"
+            f"{today};-33,00;1111 11 11111;;;Kortköp 260409 COOP GENERIC;999,99;SEK\n"
         )
         p_path = _write_csv(pending_csv)
         s_path = _write_csv(settled_csv)
@@ -378,11 +378,11 @@ class TestPendingTransactions:
         today = date.today().isoformat()
         pending_csv = (
             "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
-            "Reserverat;-33,86;1111 11 11111;;;Reservation Kortköp Coop Reimershol;999,99;SEK\n"
+            "Reserverat;-33,86;1111 11 11111;;;Reservation Kortköp Coop Generic;999,99;SEK\n"
         )
         settled_csv = (
             "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
-            f"{today};-10,44;1111 11 11111;;;Kortköp 260409 COOP REIMERSHOLME;999,99;SEK\n"
+            f"{today};-10,44;1111 11 11111;;;Kortköp 260409 COOP GENERIC;999,99;SEK\n"
         )
         p_path = _write_csv(pending_csv)
         s_path = _write_csv(settled_csv)
@@ -405,11 +405,11 @@ class TestPendingTransactions:
         today = date.today().isoformat()
         pending_csv = (
             "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
-            "Reserverat;-33,86;1111 11 11111;;;Reservation Kortköp Coop Reimershol;999,99;SEK\n"
+            "Reserverat;-33,86;1111 11 11111;;;Reservation Kortköp Coop Generic;999,99;SEK\n"
         )
         settled_csv = (
             "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
-            f"{today};-33,86;1111 11 11111;;;Kortköp 260409 COOP REIMERSHOLME;999,99;SEK\n"
+            f"{today};-33,86;1111 11 11111;;;Kortköp 260409 COOP GENERIC;999,99;SEK\n"
         )
         p_path = _write_csv(pending_csv)
         s_path = _write_csv(settled_csv)
@@ -440,11 +440,11 @@ class TestPendingTransactions:
         today = date.today().isoformat()
         settled_csv = (
             "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
-            f"{today};-33,86;1111 11 11111;;;Kortköp 260409 COOP REIMERSHOLME;999,99;SEK\n"
+            f"{today};-33,86;1111 11 11111;;;Kortköp 260409 COOP GENERIC;999,99;SEK\n"
         )
         pending_csv = (
             "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
-            "Reserverat;-33,86;1111 11 11111;;;Reservation Kortköp Coop Reimershol;999,99;SEK\n"
+            "Reserverat;-33,86;1111 11 11111;;;Reservation Kortköp Coop Generic;999,99;SEK\n"
         )
         s_path = _write_csv(settled_csv)
         p_path = _write_csv(pending_csv)
@@ -464,3 +464,36 @@ class TestPendingTransactions:
         finally:
             os.unlink(p_path)
             os.unlink(s_path)
+
+
+class TestImportDetailsDict:
+    def test_import_details(self, importer, db):
+        csv_content = (
+            "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
+            "2024-01-04;-500,00;1111;;;A1;999,99;SEK\n" # new settled
+            "2024-01-04;-500,00;1111;;;A1;999,99;SEK\n" # duplicate/skip
+            "Reserverat;-10,00;1111;;;B1;999,99;SEK\n"  # new pending
+            "invalid-row;abc;def;;;;;\n"                 # parsing error
+        )
+        path = _write_csv(csv_content)
+        try:
+            result = importer.import_file(path, account_name="test_details")
+            assert result["imported"] == 2
+            assert result["skipped"] == 1
+            assert result["errors"] == 1
+            
+            details = result["details"]
+            assert len(details["new"]) == 2
+            assert details["new"][0]["description"] == "A1"
+            assert details["new"][0]["status"] == "settled"
+            assert details["new"][1]["description"] == "B1"
+            assert details["new"][1]["status"] == "pending"
+            
+            assert len(details["skipped"]) == 1
+            assert details["skipped"][0]["description"] == "A1"
+            
+            assert len(details["failures"]) == 1
+            assert details["failures"][0]["row"][0] == "invalid-row"
+        finally:
+            os.unlink(path)
+

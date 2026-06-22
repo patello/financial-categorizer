@@ -136,7 +136,7 @@ class CSVImporter:
             auto_create_account: If True, create the account if it doesn't exist.
 
         Returns:
-            dict with 'imported', 'skipped' (duplicates), 'errors' counts.
+            dict with 'imported', 'skipped' (duplicates), 'errors' counts, and details lists.
         """
         if account_name is None:
             account_name = os.path.basename(file_path).split(".")[0]
@@ -153,6 +153,11 @@ class CSVImporter:
         skipped = 0
         errors = 0
         settled_pending = 0
+
+        details_new = []
+        details_skipped = []
+        details_settled = []
+        details_failures = []
 
         with open(file_path, newline="", encoding="utf-8-sig") as f:
             reader = csv.reader(f, delimiter=";")
@@ -186,6 +191,10 @@ class CSVImporter:
                     description = row[desc_idx].strip()
                 except (ValueError, IndexError) as e:
                     errors += 1
+                    details_failures.append({
+                        "row": row,
+                        "reason": str(e)
+                    })
                     continue
 
                 status = "pending" if is_pending else "settled"
@@ -236,6 +245,12 @@ class CSVImporter:
                             # The settled version already exists. We can safely delete the ghost pending transaction.
                             cur.execute("DELETE FROM transactions WHERE id = ?", (matched_pending_id,))
                             skipped += 1
+                            details_skipped.append({
+                                "date": txn_date,
+                                "description": description,
+                                "amount": amount,
+                                "reason": "Settled version already exists; ghost pending transaction deleted"
+                            })
                         else:
                             cur.execute(
                                 "UPDATE transactions SET date = ?, description = ?, amount = ?, "
@@ -246,11 +261,23 @@ class CSVImporter:
                             )
                             settled_pending += 1
                             imported += 1
+                            details_settled.append({
+                                "date": txn_date,
+                                "description": description,
+                                "amount": amount,
+                                "matched_pending_id": matched_pending_id
+                            })
                         continue
 
                 if status == "pending":
                     if _has_matching_settled(cur, account_id, txn_date, description, amount):
                         skipped += 1
+                        details_skipped.append({
+                            "date": txn_date,
+                            "description": description,
+                            "amount": amount,
+                            "reason": "Pending transaction already has settled counterpart"
+                        })
                         continue
 
                 try:
@@ -261,8 +288,20 @@ class CSVImporter:
                         (txn_date, description, amount, account_id, file_path, status, amount, account_id),
                     )
                     imported += 1
-                except Exception:
+                    details_new.append({
+                        "date": txn_date,
+                        "description": description,
+                        "amount": amount,
+                        "status": status
+                    })
+                except Exception as e:
                     skipped += 1
+                    details_skipped.append({
+                        "date": txn_date,
+                        "description": description,
+                        "amount": amount,
+                        "reason": f"Database unique constraint or error: {str(e)}"
+                    })
 
             self.db.commit()
 
@@ -271,4 +310,10 @@ class CSVImporter:
             "skipped": skipped,
             "errors": errors,
             "settled_pending": settled_pending,
+            "details": {
+                "new": details_new,
+                "skipped": details_skipped,
+                "settled": details_settled,
+                "failures": details_failures,
+            }
         }

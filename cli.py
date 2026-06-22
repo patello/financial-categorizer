@@ -50,18 +50,24 @@ def confirm_action(prompt_message: str, yes_flag: bool = False) -> bool:
 
 
 def cmd_import(args):
+    old_level = logging.getLogger().getEffectiveLevel()
+    if args.quiet:
+        logging.getLogger().setLevel(logging.WARNING)
+
     db = get_db(args.db)
     try:
         importer = CSVImporter(db)
         cat = Categorizer(db)
 
         total = {"imported": 0, "skipped": 0, "errors": 0, "settled_pending": 0}
+        all_file_results = []
 
         for path in args.files:
             result = importer.import_file(
                 path, account_name=args.account,
                 auto_create_account=not args.no_auto_account,
             )
+            all_file_results.append((Path(path).name, result))
             for k in total:
                 total[k] += result.get(k, 0)
             logger.info(
@@ -69,18 +75,61 @@ def cmd_import(args):
                 f"{result['skipped']} skipped, {result['errors']} errors"
             )
 
+        cat_result = None
         if total["imported"] > 0:
-            result = cat.categorize_new()
-            logger.info(f"Categorized {result['matched']} new transactions "
-                        f"({result['unmatched']} uncategorized)")
+            cat_result = cat.categorize_new()
+            logger.info(f"Categorized {cat_result['matched']} new transactions "
+                        f"({cat_result['unmatched']} uncategorized)")
 
         if total["settled_pending"] > 0:
             logger.info(f"Settled {total['settled_pending']} pending transactions")
 
-        print(f"Total: {total['imported']} imported, {total['skipped']} skipped, "
-              f"{total['errors']} errors")
+        # Print parsing failures to stderr (always, regardless of quiet/compact/verbose)
+        for name, result in all_file_results:
+            for f in result["details"]["failures"]:
+                print(f"[ERROR] Row in {name}: {f['row']} (Reason: {f['reason']})", file=sys.stderr)
+
+        if not args.quiet:
+            if not args.compact:
+                # 1. Print skips (only in verbose mode)
+                if args.verbose:
+                    for name, result in all_file_results:
+                        for s in result["details"]["skipped"]:
+                            print(f"[SKIP] {s['date']} | {s['description']} | {s['amount']:.2f} SEK ({s['reason']})")
+
+                # 2. Print settled pending transactions (for default and verbose modes)
+                for name, result in all_file_results:
+                    for s in result["details"]["settled"]:
+                        print(f"[SETTLED] {s['date']} | {s['description']} | {s['amount']:.2f} SEK (Matched pending transaction)")
+
+                # 3. Print newly imported transactions (for default and verbose modes)
+                if cat_result and "categorized_details" in cat_result:
+                    for c in cat_result["categorized_details"]:
+                        date_str = c["date"]
+                        desc = c["description"]
+                        amt = c["amount"]
+                        cat_name = c["category_name"]
+                        if cat_name:
+                            if args.verbose:
+                                if c["is_manual"]:
+                                    print(f"[NEW] {date_str} | {desc} | {amt:.2f} SEK -> {cat_name} (Manual Override)")
+                                else:
+                                    rule_info = f"Rule: {c['rule_type']} '{c['rule_pattern']}', priority {c['rule_priority']}"
+                                    print(f"[NEW] {date_str} | {desc} | {amt:.2f} SEK -> {cat_name} ({rule_info})")
+                            else:
+                                print(f"[NEW] {date_str} | {desc} | {amt:.2f} SEK -> {cat_name}")
+                        else:
+                            if args.verbose:
+                                print(f"[NEW] {date_str} | {desc} | {amt:.2f} SEK -> [Uncategorized] (No matching rule)")
+                            else:
+                                print(f"[NEW] {date_str} | {desc} | {amt:.2f} SEK -> [Uncategorized]")
+
+            # 4. Print total summary counts (compact, default, and verbose modes)
+            print(f"Total: {total['imported']} imported, {total['skipped']} skipped, "
+                  f"{total['errors']} errors")
     finally:
         db.disconnect()
+        logging.getLogger().setLevel(old_level)
 
 
 def cmd_categories(args):
@@ -1151,6 +1200,10 @@ def main():
     p_import.add_argument("--account", help="Account name (default: derived from filename)")
     p_import.add_argument("--no-auto-account", action="store_true",
                           help="Don't auto-create account if missing (raises error)")
+    g_verbosity = p_import.add_mutually_exclusive_group()
+    g_verbosity.add_argument("--quiet", "-q", action="store_true", help="Quiet mode: suppress all output except warnings/errors")
+    g_verbosity.add_argument("--compact", "-c", action="store_true", help="Compact mode: show only summary counts")
+    g_verbosity.add_argument("--verbose", "-v", action="store_true", help="Verbose mode: show detailed transaction and rule information")
     p_import.set_defaults(func=cmd_import)
 
     # accounts
