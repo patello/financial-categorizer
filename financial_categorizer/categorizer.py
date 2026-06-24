@@ -31,7 +31,7 @@ class Categorizer:
             return pattern.lower() in description.lower()
         return False
 
-    def categorize(self, transaction_id: int, recalculate: bool = True) -> int | None:
+    def categorize(self, transaction_id: int, recalculate: bool = True, rules: list | None = None, commit: bool = True) -> int | None:
         """Categorize a single transaction.
 
         Checks id_matches (manual override) first, then match_rules by priority.
@@ -52,9 +52,10 @@ class Categorizer:
                 "UPDATE transactions SET category_id = ?, matched_rule_id = NULL WHERE id = ?",
                 (row[0], transaction_id),
             )
-            self.db.commit()
+            if commit:
+                self.db.commit()
             # Auto-create external_transfer link for transfer-type categories
-            self._link_external_transfer(transaction_id, row[0], recalculate=recalculate)
+            self._link_external_transfer(transaction_id, row[0], recalculate=recalculate, commit=commit)
             return row[0]
 
         # 2. Get the transaction description and amount
@@ -68,11 +69,15 @@ class Categorizer:
         description, amount = row[0], row[1]
 
         # 3. Apply match rules in priority order (highest priority first)
-        cur.execute(
-            "SELECT id, category_id, pattern, match_type, amount_min, amount_max FROM match_rules "
-            "WHERE enabled = 1 ORDER BY priority DESC, id ASC"
-        )
-        for rule_id, category_id, pattern, match_type, amount_min, amount_max in cur.fetchall():
+        rules_list = rules
+        if rules_list is None:
+            cur.execute(
+                "SELECT id, category_id, pattern, match_type, amount_min, amount_max FROM match_rules "
+                "WHERE enabled = 1 ORDER BY priority DESC, id ASC"
+            )
+            rules_list = cur.fetchall()
+
+        for rule_id, category_id, pattern, match_type, amount_min, amount_max in rules_list:
             if not self._match_description(pattern, match_type, description):
                 continue
             # Check amount constraints
@@ -85,10 +90,11 @@ class Categorizer:
                 "UPDATE transactions SET category_id = ?, matched_rule_id = ? WHERE id = ?",
                 (category_id, rule_id, transaction_id),
             )
-            self.db.commit()
+            if commit:
+                self.db.commit()
 
             # Auto-create external_transfer link for transfer-type categories
-            self._link_external_transfer(transaction_id, category_id, recalculate=recalculate)
+            self._link_external_transfer(transaction_id, category_id, recalculate=recalculate, commit=commit)
 
             return category_id
 
@@ -97,10 +103,11 @@ class Categorizer:
             "UPDATE transactions SET category_id = NULL, matched_rule_id = NULL WHERE id = ?",
             (transaction_id,),
         )
-        self.db.commit()
+        if commit:
+            self.db.commit()
         return None
 
-    def _link_external_transfer(self, transaction_id: int, category_id: int, recalculate: bool = True) -> None:
+    def _link_external_transfer(self, transaction_id: int, category_id: int, recalculate: bool = True, commit: bool = True) -> None:
         """Create an external_transfer link if the category is a transfer type.
 
         Only creates if not already linked.
@@ -124,7 +131,8 @@ class Categorizer:
             "VALUES (?, NULL, 'external_transfer', 1.0, 'auto-linked via categorize', ?)",
             (transaction_id, associated_account_id),
         )
-        self.db.commit()
+        if commit:
+            self.db.commit()
         if recalculate:
             self.db.recalculate_adjusted_amounts()
 
@@ -141,13 +149,21 @@ class Categorizer:
         )
         uncategorized = [row[0] for row in cur.fetchall()]
 
+        # Query rules once to avoid N+1 query problem
+        cur.execute(
+            "SELECT id, category_id, pattern, match_type, amount_min, amount_max FROM match_rules "
+            "WHERE enabled = 1 ORDER BY priority DESC, id ASC"
+        )
+        rules = cur.fetchall()
+
         matched = 0
         for txn_id in uncategorized:
-            result = self.categorize(txn_id, recalculate=False)
+            result = self.categorize(txn_id, recalculate=False, rules=rules, commit=False)
             if result is not None:
                 matched += 1
 
         if matched > 0:
+            self.db.commit()
             self.db.recalculate_adjusted_amounts()
 
         categorized_details = []
@@ -198,18 +214,25 @@ class Categorizer:
             "UPDATE transactions SET category_id = NULL, matched_rule_id = NULL "
             "WHERE id NOT IN (SELECT transaction_id FROM id_matches)"
         )
-        self.db.commit()
 
         # Now categorize everything
         cur.execute("SELECT id FROM transactions")
         all_ids = [row[0] for row in cur.fetchall()]
 
+        # Query rules once to avoid N+1 query problem
+        cur.execute(
+            "SELECT id, category_id, pattern, match_type, amount_min, amount_max FROM match_rules "
+            "WHERE enabled = 1 ORDER BY priority DESC, id ASC"
+        )
+        rules = cur.fetchall()
+
         matched = 0
         for txn_id in all_ids:
-            result = self.categorize(txn_id, recalculate=False)
+            result = self.categorize(txn_id, recalculate=False, rules=rules, commit=False)
             if result is not None:
                 matched += 1
 
+        self.db.commit()
         self.db.recalculate_adjusted_amounts()
 
         return {"matched": matched, "unmatched": len(all_ids) - matched}

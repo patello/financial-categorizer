@@ -169,6 +169,33 @@ class TestCategorizeAll:
         # It should be called exactly once at the end
         assert call_count == 1
 
+    def test_categorize_all_batch_commit_count(self, db, cat):
+        """Verify that db.commit() is called in batch rather than per-transaction in categorize_all."""
+        food_id = _add_cat(cat, "Food")
+        cat.add_rule(food_id, "ICA", match_type="contains")
+
+        # Add multiple transactions
+        _add_txn(db, "ICA 1")
+        _add_txn(db, "ICA 2")
+        _add_txn(db, "ICA 3")
+
+        commit_count = 0
+        original_commit = db.commit
+
+        def spy_commit():
+            nonlocal commit_count
+            commit_count += 1
+            return original_commit()
+
+        db.commit = spy_commit
+
+        # Run categorize_all
+        cat.categorize_all()
+
+        # Commits should happen:
+        # 1. Once in categorize_all to save the updates
+        # 2. Once in recalculate_adjusted_amounts to save adjusted amounts
+        assert commit_count == 2
 
 
 class TestCategorizeNew:
@@ -184,6 +211,34 @@ class TestCategorizeNew:
         result = cat.categorize_new()
         assert result["matched"] == 1  # only txn2
         assert result["unmatched"] == 1
+
+    def test_categorize_new_batch_commit_count(self, db, cat):
+        """Verify that db.commit() is called in batch rather than per-transaction in categorize_new."""
+        food_id = _add_cat(cat, "Food")
+        cat.add_rule(food_id, "ICA", match_type="contains")
+
+        # Add multiple transactions
+        _add_txn(db, "ICA 1")
+        _add_txn(db, "ICA 2")
+        _add_txn(db, "ICA 3")
+
+        commit_count = 0
+        original_commit = db.commit
+
+        def spy_commit():
+            nonlocal commit_count
+            commit_count += 1
+            return original_commit()
+
+        db.commit = spy_commit
+
+        # Run categorize_new
+        cat.categorize_new()
+
+        # Commits should happen:
+        # 1. Once in categorize_new to save the updates
+        # 2. Once in recalculate_adjusted_amounts to save adjusted amounts
+        assert commit_count == 2
 
 
 class TestRecategorize:
