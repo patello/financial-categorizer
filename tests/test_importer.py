@@ -292,7 +292,7 @@ class TestPendingTransactions:
         )
         settled_csv = (
             "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
-            f"{today};-500,00;1111 11 11111;;;A1;999,99;SEK\n"
+            f"{today};-500,00;2222 22 22222;;;A1;999,99;SEK\n"
         )
         pending_path = _write_csv(pending_csv)
         settled_path = _write_csv(settled_csv)

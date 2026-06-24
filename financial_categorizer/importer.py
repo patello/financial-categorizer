@@ -116,6 +116,58 @@ def _has_matching_settled(cur, account_id: int, pending_date: datetime.date, pen
         
     return False
 
+def extract_account_identifier(file_path: str) -> str | None:
+    """Extract bank account number/identifier from Nordea CSV columns or file path.
+
+    Returns normalized digits (e.g. '34138' or '32660134138') or None if not found.
+    """
+    # 1. Try to extract from Nordea CSV Avsändare/Mottagare columns
+    try:
+        with open(file_path, newline="", encoding="utf-8-sig") as f:
+            reader = csv.reader(f, delimiter=";")
+            header_row = next(reader)
+            fmt_name = detect_format(header_row)
+            if fmt_name == "nordea":
+                avsandare_idx = header_row.index("Avsändare") if "Avsändare" in header_row else -1
+                mottagare_idx = header_row.index("Mottagare") if "Mottagare" in header_row else -1
+                for row in reader:
+                    if not row:
+                        continue
+                    # Check Avsändare
+                    if avsandare_idx != -1 and avsandare_idx < len(row):
+                        val = row[avsandare_idx].strip().replace(" ", "").replace("-", "")
+                        if val.isdigit() and len(val) >= 5:
+                            return val
+                    # Check Mottagare
+                    if mottagare_idx != -1 and mottagare_idx < len(row):
+                        val = row[mottagare_idx].strip().replace(" ", "").replace("-", "")
+                        if val.isdigit() and len(val) >= 5:
+                            return val
+    except Exception:
+        pass
+
+    # 2. Fallback: Parse from filename
+    basename = os.path.basename(file_path)
+    # Match standard clearing + account number pattern like '3266_01_34138' or '3266 01 34138'
+    m = re.search(r'\d{4}[_\s-]\d{2}[_\s-]\d{5,}', basename)
+    if m:
+        return re.sub(r'[_\s-]', '', m.group(0))
+        
+    # Match any sequence of 5 or more digits that is not part of a date (YYYY-MM-DD or YYYYMMDD)
+    # Strip dates out first
+    clean_name = re.sub(r'\d{4}-\d{2}-\d{2}', '', basename)
+    clean_name = re.sub(r'\d{4}\d{2}\d{2}', '', clean_name)
+    m = re.search(r'\d{5,}', clean_name)
+    if m:
+        return m.group(0)
+
+    return None
+
+
+def is_identifier_match(id1: str, id2: str) -> bool:
+    """Check if two normalized account identifiers match (one is substring or suffix of another)."""
+    return id1 in id2 or id2 in id1
+
 
 class CSVImporter:
     """Imports bank CSV files into the transactions table."""
@@ -132,21 +184,103 @@ class CSVImporter:
 
         Args:
             file_path: Path to the CSV file.
-            account_name: Override account name. If None, derived from filename.
+            account_name: Override account name. If None, derived from filename or history.
             auto_create_account: If True, create the account if it doesn't exist.
 
         Returns:
             dict with 'imported', 'skipped' (duplicates), 'errors' counts, and details lists.
         """
-        if account_name is None:
-            account_name = os.path.basename(file_path).split(".")[0]
+        current_id = extract_account_identifier(file_path)
 
-        if auto_create_account:
-            account_id = self.db.ensure_account(account_name)
+        # Get history of imported source files per account
+        cur = self.db.get_cursor()
+        cur.execute(
+            "SELECT DISTINCT t.account_id, a.name, t.source_file "
+            "FROM transactions t "
+            "JOIN accounts a ON t.account_id = a.id "
+            "WHERE t.source_file IS NOT NULL"
+        )
+        history = cur.fetchall()
+
+        history_mappings = []
+        for hist_acct_id, hist_acct_name, hist_file in history:
+            hist_id = extract_account_identifier(hist_file)
+            if hist_id:
+                history_mappings.append((hist_acct_id, hist_acct_name, hist_id))
+
+        target_acct = None
+
+        if account_name is None:
+            # 1. Try auto-detecting from history if current_id matches a historical identifier
+            if current_id:
+                matching_hist = [
+                    (acct_id, acct_name)
+                    for acct_id, acct_name, hist_id in history_mappings
+                    if is_identifier_match(current_id, hist_id)
+                ]
+                if matching_hist:
+                    unique_matches = list(set(matching_hist))
+                    if len(unique_matches) == 1:
+                        target_acct = unique_matches[0]
+                    else:
+                        names = ", ".join([name for _, name in unique_matches])
+                        raise ValueError(
+                            f"Ambiguous account mapping for identifier '{current_id}'. "
+                            f"Historically associated with multiple accounts: {names}. "
+                            f"Please specify --account explicitly."
+                        )
+
+            # 2. Check metadata if still not resolved
+            if target_acct is None and current_id:
+                accounts = self.db.list_accounts()
+                matches = []
+                for acct in accounts:
+                    meta_ids = re.findall(r'\d{5,}', acct["name"] + " " + (acct["description"] or ""))
+                    if any(is_identifier_match(current_id, mid) for mid in meta_ids) or \
+                       current_id in acct["name"].lower() or \
+                       current_id in (acct["description"] or "").lower():
+                        matches.append((acct["id"], acct["name"]))
+                if len(matches) == 1:
+                    target_acct = matches[0]
+
+            # 3. Fallback to deriving from filename
+            if target_acct is None:
+                derived_name = os.path.basename(file_path).split(".")[0]
+                target_acct = (None, derived_name)
         else:
             acct = self.db.get_account_by_name(account_name)
+            if acct:
+                target_acct = (acct["id"], acct["name"])
+            else:
+                target_acct = (None, account_name)
+
+        target_id, target_name = target_acct
+
+        # Validate against conflicts in history
+        if current_id:
+            for hist_acct_id, hist_acct_name, hist_id in history_mappings:
+                if is_identifier_match(current_id, hist_id):
+                    if target_id is not None and target_id != hist_acct_id:
+                        raise ValueError(
+                            f"Account mismatch: File '{file_path}' contains account identifier '{current_id}' "
+                            f"which has historically been imported to account '{hist_acct_name}' (ID {hist_acct_id}), "
+                            f"but you specified target account '{target_name}' (ID {target_id})."
+                        )
+                    elif target_id is None and target_name != hist_acct_name:
+                        raise ValueError(
+                            f"Account mismatch: File '{file_path}' contains account identifier '{current_id}' "
+                            f"which has historically been imported to account '{hist_acct_name}' (ID {hist_acct_id}), "
+                            f"but you specified target account name '{target_name}'."
+                        )
+
+        if auto_create_account:
+            account_id = self.db.ensure_account(target_name)
+        else:
+            acct = self.db.get_account_by_name(target_name)
             if not acct:
-                raise ValueError(f"Account '{account_name}' not found. Create it first or use auto_create_account=True.")
+                raise ValueError(
+                    f"Account '{target_name}' not found. Create it first or use auto_create_account=True."
+                )
             account_id = acct["id"]
 
         imported = 0
