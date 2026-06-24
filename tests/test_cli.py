@@ -497,7 +497,7 @@ def test_cli_manual_unmatch(temp_db, monkeypatch, capsys):
         main()
     assert exc_info.value.code == 1
     captured = capsys.readouterr()
-    assert f"Error: Transaction {t_rule} does not have a manual categorization override." in captured.err
+    assert f"Error: Transaction [{t_rule}] does not have a manual categorization override." in captured.err
     
     # B. Test manual-unmatch on uncategorized (should fail)
     test_args = ["cli.py", "--db", temp_db.db_file, "manual-unmatch", str(t_uncat)]
@@ -506,14 +506,14 @@ def test_cli_manual_unmatch(temp_db, monkeypatch, capsys):
         main()
     assert exc_info.value.code == 1
     captured = capsys.readouterr()
-    assert f"Error: Transaction {t_uncat} does not have a manual categorization override." in captured.err
+    assert f"Error: Transaction [{t_uncat}] does not have a manual categorization override." in captured.err
 
     # C. Test manual-unmatch on manually matched (should succeed)
     test_args = ["cli.py", "--db", temp_db.db_file, "manual-unmatch", str(t_manual)]
     monkeypatch.setattr(sys, "argv", test_args)
     main()
     captured = capsys.readouterr()
-    assert f"Removed manual categorization override for transaction {t_manual}." in captured.out
+    assert f"Removed manual categorization override for transaction [{t_manual}]." in captured.out
     
     # Verify DB changes
     cur.execute("SELECT category_id, matched_rule_id FROM transactions WHERE id = ?", (t_manual,))
@@ -588,6 +588,97 @@ def test_cli_import_verbosity(temp_db, monkeypatch, capsys, tmp_path):
     assert "[ERROR] Row in test_nordea.csv" in captured.err
     assert "UNIQUE constraint" in captured.out
     assert "Total: 0 imported, 2 skipped, 1 errors" in captured.out
+
+
+def test_cli_manual_match_flexible(temp_db, monkeypatch, capsys):
+    aid = temp_db.add_account("Checking")
+    cur = temp_db.get_cursor()
+
+    # Setup categories
+    cur.execute("INSERT INTO categories (name) VALUES ('Groceries')")
+    cat_groceries = cur.lastrowid
+    cur.execute("INSERT INTO categories (name) VALUES ('Restaurants')")
+    cat_restaurants = cur.lastrowid
+
+    # Setup transactions
+    cur.execute(
+        "INSERT INTO transactions (account_id, date, description, amount) "
+        "VALUES (?, '2026-06-20', 'ICA Supermarket', -120.00)",
+        (aid,)
+    )
+    t_ica = cur.lastrowid
+
+    cur.execute(
+        "INSERT INTO transactions (account_id, date, description, amount) "
+        "VALUES (?, '2026-06-20', 'McDonalds 1', -80.00)",
+        (aid,)
+    )
+    t_mcd1 = cur.lastrowid
+
+    cur.execute(
+        "INSERT INTO transactions (account_id, date, description, amount) "
+        "VALUES (?, '2026-06-21', 'McDonalds 2', -90.00)",
+        (aid,)
+    )
+    t_mcd2 = cur.lastrowid
+
+    temp_db.commit()
+
+    # 1. Test match using exact numeric IDs (should succeed)
+    test_args = ["cli.py", "--db", temp_db.db_file, "manual-match", str(t_ica), str(cat_groceries)]
+    monkeypatch.setattr(sys, "argv", test_args)
+    main()
+    captured = capsys.readouterr()
+    assert f"Manually matched transaction [{t_ica}] 'ICA Supermarket' -> category [{cat_groceries}] 'Groceries'" in captured.out
+
+    # Verify ID match exists
+    cur.execute("SELECT category_id FROM id_matches WHERE transaction_id = ?", (t_ica,))
+    assert cur.fetchone()[0] == cat_groceries
+
+    # 2. Test match using query descriptions (should succeed when exactly one matches)
+    test_args = ["cli.py", "--db", temp_db.db_file, "manual-match", "ICA", "Groceries"]
+    monkeypatch.setattr(sys, "argv", test_args)
+    main()
+    captured = capsys.readouterr()
+    assert f"Manually matched transaction [{t_ica}] 'ICA Supermarket' -> category [{cat_groceries}] 'Groceries'" in captured.out
+
+    # 3. Test matching category by name case-insensitively
+    test_args = ["cli.py", "--db", temp_db.db_file, "manual-match", "ICA", "groceries"]
+    monkeypatch.setattr(sys, "argv", test_args)
+    main()
+    captured = capsys.readouterr()
+    assert f"Manually matched transaction [{t_ica}] 'ICA Supermarket' -> category [{cat_groceries}] 'Groceries'" in captured.out
+
+    # 4. Test matching transaction with multiple matches (should fail and list candidates)
+    test_args = ["cli.py", "--db", temp_db.db_file, "manual-match", "McDonalds", "Restaurants"]
+    monkeypatch.setattr(sys, "argv", test_args)
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert "Error: Multiple transactions found matching 'McDonalds':" in captured.err
+    assert f"[{t_mcd1}]" in captured.err
+    assert f"[{t_mcd2}]" in captured.err
+
+    # 5. Test matching non-existent category (should fail)
+    test_args = ["cli.py", "--db", temp_db.db_file, "manual-match", "ICA", "NonExistentCategory"]
+    monkeypatch.setattr(sys, "argv", test_args)
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert "Error: Category 'NonExistentCategory' not found." in captured.err
+
+    # 6. Test manual-unmatch using description query (should succeed when exactly one matches)
+    test_args = ["cli.py", "--db", temp_db.db_file, "manual-unmatch", "ICA"]
+    monkeypatch.setattr(sys, "argv", test_args)
+    main()
+    captured = capsys.readouterr()
+    assert f"Removed manual categorization override for transaction [{t_ica}]." in captured.out
+
+    # Verify ID match deleted
+    cur.execute("SELECT category_id FROM id_matches WHERE transaction_id = ?", (t_ica,))
+    assert cur.fetchone() is None
 
 
 

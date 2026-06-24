@@ -610,9 +610,22 @@ def cmd_delete_account(args):
 def cmd_manual_match(args):
     db = get_db(args.db)
     try:
+        try:
+            txn_id = resolve_transaction_id(db, args.transaction)
+            cat_id = resolve_category_id(db, args.category)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+
         cat = Categorizer(db)
-        cat.add_manual_match(args.transaction, args.category)
-        print(f"Manually matched transaction {args.transaction} -> category {args.category}")
+        cat.add_manual_match(txn_id, cat_id)
+        # Fetch details for a friendly/clear confirmation printout
+        cur = db.get_cursor()
+        cur.execute("SELECT description FROM transactions WHERE id = ?", (txn_id,))
+        txn_desc = cur.fetchone()[0]
+        cur.execute("SELECT name FROM categories WHERE id = ?", (cat_id,))
+        cat_name = cur.fetchone()[0]
+        print(f"Manually matched transaction [{txn_id}] '{txn_desc}' -> category [{cat_id}] '{cat_name}'")
     finally:
         db.disconnect()
 
@@ -620,11 +633,17 @@ def cmd_manual_match(args):
 def cmd_manual_unmatch(args):
     db = get_db(args.db)
     try:
+        try:
+            txn_id = resolve_transaction_id(db, args.transaction)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+
         cat = Categorizer(db)
-        if cat.remove_manual_match(args.transaction):
-            print(f"Removed manual categorization override for transaction {args.transaction}.")
+        if cat.remove_manual_match(txn_id):
+            print(f"Removed manual categorization override for transaction [{txn_id}].")
         else:
-            print(f"Error: Transaction {args.transaction} does not have a manual categorization override.", file=sys.stderr)
+            print(f"Error: Transaction [{txn_id}] does not have a manual categorization override.", file=sys.stderr)
             sys.exit(1)
     finally:
         db.disconnect()
@@ -647,6 +666,85 @@ def resolve_account_id(db, name_or_id: str) -> int:
         return acct["id"]
 
     raise ValueError(f"Account '{name_or_id}' not found.")
+
+
+def resolve_transaction_id(db, search_term: str) -> int:
+    """Resolve a transaction by ID or search term.
+
+    If multiple matches are found, raises ValueError with match details.
+    """
+    if not search_term:
+        raise ValueError("Transaction identifier must not be empty.")
+
+    # 1. Try to parse as transaction ID
+    try:
+        txn_id = int(search_term)
+        cur = db.get_cursor()
+        cur.execute("SELECT id FROM transactions WHERE id = ?", (txn_id,))
+        if cur.fetchone():
+            return txn_id
+    except ValueError:
+        pass
+
+    # 2. Try to search by description
+    cur = db.get_cursor()
+    cur.execute(
+        "SELECT t.id, t.date, t.amount, t.description, c.name, a.name "
+        "FROM transactions t "
+        "JOIN accounts a ON a.id = t.account_id "
+        "LEFT JOIN categories c ON c.id = t.category_id "
+        "WHERE t.description LIKE ?",
+        (f"%{search_term}%",)
+    )
+    rows = cur.fetchall()
+    if not rows:
+        raise ValueError(f"No transaction found matching '{search_term}'.")
+
+    if len(rows) > 1:
+        matches = []
+        for r in rows:
+            cat_str = f" [{r[4]}]" if r[4] else " [Uncategorized]"
+            matches.append(f"  [{r[0]}] {r[1]} {r[2]:>10.2f} SEK  {r[5]:<15} {cat_str:<18} {r[3]}")
+        match_list = "\n".join(matches)
+        raise ValueError(
+            f"Multiple transactions found matching '{search_term}':\n{match_list}\n"
+            "Please specify the transaction using its ID."
+        )
+
+    return rows[0][0]
+
+
+def resolve_category_id(db, name_or_id: str) -> int:
+    """Resolve a category name or ID to a category ID."""
+    if not name_or_id:
+        raise ValueError("Category identifier must not be empty.")
+
+    # 1. Try to parse as category ID
+    try:
+        cat_id = int(name_or_id)
+        cur = db.get_cursor()
+        cur.execute("SELECT id FROM categories WHERE id = ?", (cat_id,))
+        if cur.fetchone():
+            return cat_id
+    except ValueError:
+        pass
+
+    # 2. Try exact name match (case-insensitive)
+    cur = db.get_cursor()
+    cur.execute("SELECT id FROM categories WHERE LOWER(name) = LOWER(?)", (name_or_id,))
+    row = cur.fetchone()
+    if row:
+        return row[0]
+
+    # 3. Try substring match
+    cur.execute("SELECT id, name FROM categories WHERE name LIKE ?", (f"%{name_or_id}%",))
+    rows = cur.fetchall()
+    if not rows:
+        raise ValueError(f"Category '{name_or_id}' not found.")
+    if len(rows) > 1:
+        match_names = ", ".join(f"'{r[1]}' (ID: {r[0]})" for r in rows)
+        raise ValueError(f"Multiple categories match '{name_or_id}': {match_names}. Please be more specific.")
+    return rows[0][0]
 
 
 def resolve_period_type(db, arg_value):
@@ -1334,13 +1432,13 @@ def main():
 
     # manual-match
     p_manual = subparsers.add_parser("manual-match", help="Manually match a transaction to a category")
-    p_manual.add_argument("transaction", type=int, help="Transaction ID")
-    p_manual.add_argument("category", type=int, help="Category ID")
+    p_manual.add_argument("transaction", type=str, help="Transaction ID or description query")
+    p_manual.add_argument("category", type=str, help="Category ID or name query")
     p_manual.set_defaults(func=cmd_manual_match)
 
     # manual-unmatch
     p_manual_unmatch = subparsers.add_parser("manual-unmatch", help="Remove a manual categorization override")
-    p_manual_unmatch.add_argument("transaction", type=int, help="Transaction ID")
+    p_manual_unmatch.add_argument("transaction", type=str, help="Transaction ID or description query")
     p_manual_unmatch.set_defaults(func=cmd_manual_unmatch)
 
     # stats summary
