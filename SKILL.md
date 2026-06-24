@@ -300,9 +300,9 @@ financial-categorizer/
     └── stats.py                # SQL View registers and stats math
 ```
 
-## SQLite Database Schema & Views
+## SQLite Views
 
-This skill utilizes a dynamic database schema. Analytical SQL views are registered dynamically to provide high performance and low-overhead querying for dashboards (e.g., Grafana):
+For analytical reporting (e.g. dashboards, Grafana), the following views are registered in the database:
 
 1. **`v_effective_transactions`** — Joins transactions with accounts to factor in ownership ratios and transfer link adjustments.
 2. **`v_monthly_summary`** — Calculates net income/expenses by month.
@@ -314,6 +314,41 @@ This skill utilizes a dynamic database schema. Analytical SQL views are register
 8. **`v_salary_period_summary`** — Expense/income summary grouped by salary periods (using the active salary config: fixed or salary).
 9. **`v_breakout_categories`** — Groups monthly spending into high-level categories (Groceries, Loans, Housing, Leisure, Car, etc.).
 10. **`v_uncategorized_groups`** — Groups uncategorized transactions by normalized Swish/Card payment descriptions to identify potential new rules.
+
+---
+
+## Querying Unmatched Reimbursements via CLI
+
+Unmatched reimbursements (pending paybacks or refunds) are incoming transactions on tracked accounts that have not yet been neutralized by a transaction link. They can be queried and filtered using the CLI:
+
+### Workflow:
+
+1. **Query the transactions** depending on the categorization workflow in use:
+   * **If using Uncategorized / Flat List (Option A)**:
+     ```bash
+     python cli.py uncategorized --non-zero
+     ```
+   * **If using a Dedicated Category (Option B)**:
+     ```bash
+     python cli.py transactions --category Reimbursements --non-zero --limit 100
+     ```
+
+2. **Identify candidates from the output**:
+   * **Inflows**: Look for transactions with positive amounts (`amount > 0`).
+   * **Regular Income Exclusions**: Filter out regular income sources (e.g., `"Lön"`, `"Salary"`, `"BARNBDR"`).
+   * **Adjusted Amount**: Verify that the adjusted amount is non-zero (linked/neutralized transactions show `adjusted_amount = 0.00`).
+
+### Example Filter Logic:
+If the CLI output shows:
+```
+Transactions (4):
+  [12] 2026-06-23   23539.00 SEK                      Personligt      [Uncategorized]     Lön
+  [15] 2026-06-18     312.50 SEK                      Personligt      [Uncategorized]     BARNBDR
+  [18] 2026-06-16     482.50 SEK                      Personligt      [Uncategorized]     Swish inbetalning ANDERSSON, THOMAS
+  [21] 2026-05-20      30.00 SEK                      Personligt      [Uncategorized]     Swish inbetalning ANDERSSON, THOMAS
+```
+* **Include**: `[18]` (+482.50) and `[21]` (+30.00) (positive Swish payments from an individual are reimbursement candidates).
+* **Exclude**: `[12]` (Lön/Salary) and `[15]` (barnbidrag/regular benefit payment).
 
 ## Dependencies
 
