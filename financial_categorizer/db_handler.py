@@ -662,7 +662,8 @@ class DatabaseHandler:
         """
         sql = """
             SELECT t.id, t.date, t.description, t.amount, t.adjusted_amount,
-                   t.category_id, c.name AS category_name, a.name AS account_name
+                   t.category_id, c.name AS category_name, a.name AS account_name,
+                   a.ownership_ratio
             FROM transactions t
             JOIN accounts a ON a.id = t.account_id
             LEFT JOIN categories c ON c.id = t.category_id
@@ -695,6 +696,8 @@ class DatabaseHandler:
                 "category_id": row[5],
                 "category_name": row[6],
                 "account_name": row[7],
+                "ownership_ratio": row[8],
+                "unsplit_amount": row[4] / row[8] if row[4] is not None and row[8] > 0 else row[3],
             }
             for row in cur.fetchall()
         ]

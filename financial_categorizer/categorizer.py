@@ -420,15 +420,23 @@ class Categorizer:
             for row in cur.fetchall()
         ]
 
-    def get_uncategorized_grouped(self, non_zero: bool = False) -> list[dict]:
+    def get_uncategorized_grouped(self, non_zero: bool = False,
+                                  net: bool = False, unsplit: bool = False) -> list[dict]:
         """Group uncategorized transactions by description.
 
         Returns list of dicts with description, count, total, avg_amount,
         account_names, sorted by count descending.
         """
-        sql = """
-            SELECT t.description, COUNT(*) as cnt, ROUND(SUM(t.amount), 2) as total, 
-                   ROUND(AVG(t.amount), 2) as avg_amount, GROUP_CONCAT(DISTINCT a.name) as accounts 
+        if unsplit:
+            amount_expr = "(t.adjusted_amount / a.ownership_ratio)"
+        elif net:
+            amount_expr = "t.adjusted_amount"
+        else:
+            amount_expr = "t.amount"
+
+        sql = f"""
+            SELECT t.description, COUNT(*) as cnt, ROUND(SUM({amount_expr}), 2) as total, 
+                   ROUND(AVG({amount_expr}), 2) as avg_amount, GROUP_CONCAT(DISTINCT a.name) as accounts 
             FROM transactions t JOIN accounts a ON t.account_id = a.id 
             WHERE t.category_id IS NULL
         """

@@ -472,8 +472,21 @@ def cmd_transactions(args):
         print(f"Transactions ({len(txns)}):")
         for t in txns:
             cat_str = f" [{t['category_name']}]" if t['category_name'] else " [Uncategorized]"
-            adj_str = f" (adj: {t['adjusted_amount']:.2f})" if abs(t['adjusted_amount'] - t['amount']) > 1e-4 else ""
-            print(f"  [{t['id']}] {t['date']}  {t['amount']:>10.2f} SEK{adj_str:<17}  {t['account_name']:<15} {cat_str:<18}  {t['description']}")
+            if args.unsplit:
+                main_val = t['unsplit_amount']
+                diff_val = t['amount']
+                helper_label = "raw"
+            elif args.net:
+                main_val = t['adjusted_amount']
+                diff_val = t['amount']
+                helper_label = "raw"
+            else:
+                main_val = t['amount']
+                diff_val = t['adjusted_amount']
+                helper_label = "adj"
+
+            helper_str = f" ({helper_label}: {diff_val:.2f})" if abs(main_val - diff_val) > 1e-4 else ""
+            print(f"  [{t['id']}] {t['date']}  {main_val:>10.2f} SEK{helper_str:<17}  {t['account_name']:<15} {cat_str:<18}  {t['description']}")
     finally:
         db.disconnect()
 
@@ -484,11 +497,22 @@ def cmd_uncategorized(args):
         cat = Categorizer(db)
 
         if args.group:
-            groups = cat.get_uncategorized_grouped(non_zero=args.non_zero)
+            groups = cat.get_uncategorized_grouped(
+                non_zero=args.non_zero,
+                net=args.net,
+                unsplit=args.unsplit
+            )
             if not groups:
                 print("All transactions are categorized.")
                 return
-            print(f"Uncategorized by description ({len(groups)} groups):")
+            
+            mode_label = ""
+            if args.unsplit:
+                mode_label = " (unsplit)"
+            elif args.net:
+                mode_label = " (net)"
+
+            print(f"Uncategorized by description ({len(groups)} groups){mode_label}:")
             for g in groups:
                 print(f"  {g['count']:>3}x  {g['total']:>10.2f}  avg={g['avg_amount']:>8.2f}  {g['description']}")
         else:
@@ -502,8 +526,21 @@ def cmd_uncategorized(args):
                 return
             print(f"Uncategorized transactions ({len(uncategorized)}):")
             for t in uncategorized:
-                adj_str = f" (adj: {t['adjusted_amount']:.2f})" if abs(t['adjusted_amount'] - t['amount']) > 1e-4 else ""
-                print(f"  [{t['id']}] {t['date']}  {t['amount']:>10.2f} SEK{adj_str:<17}  {t['description']}")
+                if args.unsplit:
+                    main_val = t['unsplit_amount']
+                    diff_val = t['amount']
+                    helper_label = "raw"
+                elif args.net:
+                    main_val = t['adjusted_amount']
+                    diff_val = t['amount']
+                    helper_label = "raw"
+                else:
+                    main_val = t['amount']
+                    diff_val = t['adjusted_amount']
+                    helper_label = "adj"
+
+                helper_str = f" ({helper_label}: {diff_val:.2f})" if abs(main_val - diff_val) > 1e-4 else ""
+                print(f"  [{t['id']}] {t['date']}  {main_val:>10.2f} SEK{helper_str:<17}  {t['description']}")
     finally:
         db.disconnect()
 
@@ -1475,12 +1512,18 @@ def main():
     p_txns.add_argument("--non-zero", action="store_true", help="Exclude transactions with adjusted_amount = 0")
     p_txns.add_argument("--account", help="Filter by account name")
     p_txns.add_argument("--limit", type=int, default=50, help="Maximum number of transactions to return (default: 50)")
+    g_txns = p_txns.add_mutually_exclusive_group()
+    g_txns.add_argument("--net", action="store_true", help="Display personal net (adjusted_amount) as primary value")
+    g_txns.add_argument("--unsplit", action="store_true", help="Display household net (unsplit_amount) as primary value")
     p_txns.set_defaults(func=cmd_transactions)
 
     # uncategorized
     p_uncat = subparsers.add_parser("uncategorized", help="Show uncategorized transactions")
     p_uncat.add_argument("--group", action="store_true", help="Group by description with counts and totals")
     p_uncat.add_argument("--non-zero", action="store_true", help="Exclude transactions with adjusted_amount = 0")
+    g_uncat = p_uncat.add_mutually_exclusive_group()
+    g_uncat.add_argument("--net", action="store_true", help="Display personal net (adjusted_amount) as primary value")
+    g_uncat.add_argument("--unsplit", action="store_true", help="Display household net (unsplit_amount) as primary value")
     p_uncat.set_defaults(func=cmd_uncategorized)
 
     # manual-match

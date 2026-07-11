@@ -97,8 +97,8 @@ The following commands require confirmation:
 | `remove-rule <id> [--yes]` | Remove an auto-categorization rule (requires confirmation or `-y`) |
 | `preview <pattern>` | Preview which transactions match a pattern before adding a rule |
 | `categorize [--all]` | Run auto-categorization rules |
-| `uncategorized [--group] [--non-zero]` | List all uncategorized transactions |
-| `transactions [--category <name>] [--uncategorized] [--non-zero] [--account <name>] [--limit <n>]` | Search, list, and filter transactions |
+| `uncategorized [--group] [--non-zero] [--net | --unsplit]` | List all uncategorized transactions (supports `--net` or `--unsplit`) |
+| `transactions [--category <name>] [--uncategorized] [--non-zero] [--account <name>] [--limit <n>] [--net | --unsplit]` | Search, list, and filter transactions (supports `--net` or `--unsplit`) |
 | `manual-match <txn_id> <cat_id>` | Manually assign a category override to a transaction |
 | `manual-unmatch <txn_id>` | Remove a manual categorization override |
 | `stats-summary [--month <YYYY-MM>] [--period-type <type>] [--unsplit | --gross]` | Monthly summary of income, expenses, and net (supports `--unsplit` or `--gross`) |
