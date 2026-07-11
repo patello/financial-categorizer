@@ -52,6 +52,50 @@ jobs:
           echo "Changelog content:"
           cat changelog.txt
 
+      - name: Sync README sections to SKILL.md
+        run: |
+          node -e '
+          const fs = require("fs");
+          const readme = fs.readFileSync("README.md", "utf8");
+          let skill = fs.readFileSync("SKILL.md", "utf8");
+          
+          function extractSection(markdown, heading) {
+            const hashCount = (heading.match(/^#+/) || [""])[0].length;
+            const lines = markdown.split(/\r?\n/);
+            let startIndex = -1;
+            for (let i = 0; i < lines.length; i++) {
+              if (lines[i].trim() === heading) {
+                startIndex = i;
+                break;
+              }
+            }
+            if (startIndex === -1) return "";
+            
+            const sectionLines = [lines[startIndex]];
+            for (let i = startIndex + 1; i < lines.length; i++) {
+              const line = lines[i];
+              const match = line.match(/^(#+)\s/);
+              if (match && match[1].length <= hashCount) {
+                break;
+              }
+              sectionLines.push(line);
+            }
+            return sectionLines.join("\n");
+          }
+          
+          const matches = [...skill.matchAll(/<!-- INSERT:SECTION:(.*?) -->/g)];
+          for (const match of matches) {
+            const tag = match[0];
+            const heading = match[1];
+            const sectionContent = extractSection(readme, heading);
+            if (sectionContent) {
+              skill = skill.replace(tag, sectionContent);
+            }
+          }
+          
+          fs.writeFileSync("SKILL.md", skill, "utf8");
+          '
+
       - name: Remove non-production files before publishing
         run: |
           rm -rf tests/ conftest.py .pytest_cache/ __pycache__/ financial_categorizer/__pycache__/
