@@ -101,12 +101,13 @@ The following commands require confirmation:
 | `transactions [--category <name>] [--uncategorized] [--non-zero] [--account <name>] [--limit <n>]` | Search, list, and filter transactions |
 | `manual-match <txn_id> <cat_id>` | Manually assign a category override to a transaction |
 | `manual-unmatch <txn_id>` | Remove a manual categorization override |
-| `stats-summary [--period-type <type>]` | Monthly summary of income, expenses, and net |
-| `stats-category <name> [--period-type <type>]` | Category total with subcategory rollups |
-| `stats-trend <name> [--period-type <type>]` | Monthly trend for a category |
-| `stats-top [--period-type <type>]` | Top spending categories sorted by total expenses |
-| `stats-transfers [--month <YYYY-MM>] [--period-type <type>]` | Net capital transfers to external accounts |
-| `stats-cashflow [--month <YYYY-MM>] [--period-type <type>]` | Monthly cash flow summary (Operating, Transfers, Net) |
+| `stats-summary [--month <YYYY-MM>] [--period-type <type>] [--unsplit | --gross]` | Monthly summary of income, expenses, and net (supports `--unsplit` or `--gross`) |
+| `stats-category <name> [--month <YYYY-MM>] [--from <date>] [--to <date>] [--period-type <type>] [--unsplit | --gross]` | Category total with subcategory rollups (supports `--unsplit` or `--gross`) |
+| `stats-trend <name> [--from <date>] [--to <date>] [--period-type <type>] [--unsplit | --gross]` | Monthly trend for a category (supports `--unsplit` or `--gross`) |
+| `stats-top [--month <YYYY-MM>] [--limit <n>] [--period-type <type>] [--unsplit | --gross]` | Top spending categories sorted by total expenses (supports `--unsplit` or `--gross`) |
+| `stats-transfers [--month <YYYY-MM>] [--period-type <type>] [--unsplit | --gross]` | Net capital transfers to external accounts (supports `--unsplit` or `--gross`) |
+| `stats-compare [--month <YYYY-MM>] [--period-type <type>] [--unsplit | --gross]` | Month-over-month comparison (supports `--unsplit` or `--gross`) |
+| `stats-cashflow [--month <YYYY-MM>] [--period-type <type>] [--unsplit | --gross]` | Monthly cash flow summary (Operating, Transfers, Net; supports `--unsplit` or `--gross`) |
 | `link <from_id> [to_id] --type [--to-account <name_or_id>] [--ratio <val> \| --ratio-to <val> \| --amount <val>] [--dry-run]` | Link transactions (specify `--to-account` for external transfers, or ratio/amount options to customize values; `--dry-run` to preview) |
 | `unlink <id> [--yes]` | Remove a link (requires confirmation or `-y`) |
 | `links` | List all transaction links |
@@ -304,9 +305,9 @@ financial-categorizer/
 
 For analytical reporting (e.g. dashboards, Grafana), the following views are registered in the database:
 
-1. **`v_effective_transactions`** — Joins transactions with accounts to factor in ownership ratios and transfer link adjustments.
-2. **`v_monthly_summary`** — Calculates net income/expenses by month.
-3. **`v_category_monthly`** — Calculates monthly spending by category.
+1. **`v_effective_transactions`** — Joins transactions with accounts to factor in ownership ratios and transfer link adjustments. Includes `adjusted_amount`, `unsplit_amount`, and `raw_amount` columns.
+2. **`v_monthly_summary`** — Calculates net income/expenses by month (includes unsplit and gross aggregations).
+3. **`v_category_monthly`** — Calculates monthly spending by category (includes unsplit and gross aggregations).
 4. **`v_daily_spending`** — Daily expense aggregation.
 5. **`v_cumulative_spending_monthly`** — Running month-to-date daily cumulative spending.
 6. **`v_daily_spending_moving_average`** — 30-day moving average of daily spending.

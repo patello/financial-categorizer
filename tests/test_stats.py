@@ -275,3 +275,57 @@ class TestNewAnalyticalViews:
         # 6. Test v_uncategorized_groups
         cur.execute("SELECT COUNT(*) FROM v_uncategorized_groups")
         assert cur.fetchone()[0] > 0
+
+
+class TestUnsplitAndGross:
+
+    def test_unsplit_and_gross_totals(self, db, stats):
+        a1 = db.add_account("Checking")
+        a2 = db.add_account("Shared", ownership_ratio=0.5)
+
+        c = Categorizer(db)
+        food_id = c.add_category("Food")
+        reimb_id = c.add_category("Reimbursement", category_type="income")
+
+        # Original shared expense of -2000 SEK (adjusted base = -1000 SEK)
+        cur = db.get_cursor()
+        cur.execute(
+            "INSERT INTO transactions (date, description, amount, account_id, category_id) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (datetime.date(2026, 1, 10), "ICA Maxi shared", -2000.0, a2, food_id)
+        )
+        t_exp_id = cur.lastrowid
+
+        # Reimbursement of +500 SEK from partner (adjusted base = +500 SEK)
+        cur.execute(
+            "INSERT INTO transactions (date, description, amount, account_id, category_id) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (datetime.date(2026, 1, 12), "Swish reimbursement", 500.0, a1, reimb_id)
+        )
+        t_reimb_id = cur.lastrowid
+        db.commit()
+
+        # Link them as a reimbursement
+        from financial_categorizer.db_handler import TransferManager
+        linker = TransferManager(db)
+        linker.link_transactions(t_reimb_id, t_exp_id, link_type="reimbursement", ratio=1.0)
+
+        # Verify adjusted amounts
+        cur.execute("SELECT adjusted_amount FROM transactions WHERE id = ?", (t_exp_id,))
+        assert cur.fetchone()[0] == pytest.approx(-750.0)
+
+        # Re-initialize Stats to recreate views
+        stats = Stats(db)
+
+        # 1. Default total for Food category
+        tot_default = stats.category_total(food_id)
+        assert tot_default["total"] == pytest.approx(-750.0)
+
+        # 2. Unsplit total (household net of reimbursement)
+        tot_unsplit = stats.category_total(food_id, unsplit=True)
+        assert tot_unsplit["total"] == pytest.approx(-1500.0)
+
+        # 3. Gross total (household before reimbursement)
+        tot_gross = stats.category_total(food_id, gross=True)
+        assert tot_gross["total"] == pytest.approx(-2000.0)
+

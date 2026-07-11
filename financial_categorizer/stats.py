@@ -38,7 +38,10 @@ class Stats:
                    t.account_id, t.category_id, t.status, t.comment,
                    a.name AS account_name, a.type AS account_type,
                    c.name AS category_name,
-                   COALESCE(c.category_type, 'expense') AS category_type
+                   COALESCE(c.category_type, 'expense') AS category_type,
+                   a.ownership_ratio,
+                   (t.adjusted_amount / a.ownership_ratio) AS unsplit_amount,
+                   t.amount AS raw_amount
             FROM transactions t
             JOIN accounts a ON a.id = t.account_id
             LEFT JOIN categories c ON c.id = t.category_id
@@ -50,7 +53,13 @@ class Stats:
             SELECT strftime('%Y-%m', date) AS month,
                    ROUND(SUM(CASE WHEN adjusted_amount > 0 AND category_type != 'transfer' THEN adjusted_amount ELSE 0 END), 2) AS total_income,
                    ROUND(SUM(CASE WHEN adjusted_amount < 0 AND category_type != 'transfer' THEN adjusted_amount ELSE 0 END), 2) AS total_expenses,
-                   ROUND(SUM(CASE WHEN category_type != 'transfer' THEN adjusted_amount ELSE 0 END), 2) AS net
+                   ROUND(SUM(CASE WHEN category_type != 'transfer' THEN adjusted_amount ELSE 0 END), 2) AS net,
+                   ROUND(SUM(CASE WHEN unsplit_amount > 0 AND category_type != 'transfer' THEN unsplit_amount ELSE 0 END), 2) AS total_income_unsplit,
+                   ROUND(SUM(CASE WHEN unsplit_amount < 0 AND category_type != 'transfer' THEN unsplit_amount ELSE 0 END), 2) AS total_expenses_unsplit,
+                   ROUND(SUM(CASE WHEN category_type != 'transfer' THEN unsplit_amount ELSE 0 END), 2) AS net_unsplit,
+                   ROUND(SUM(CASE WHEN raw_amount > 0 AND category_type != 'transfer' THEN raw_amount ELSE 0 END), 2) AS total_income_gross,
+                   ROUND(SUM(CASE WHEN raw_amount < 0 AND category_type != 'transfer' THEN raw_amount ELSE 0 END), 2) AS total_expenses_gross,
+                   ROUND(SUM(CASE WHEN category_type != 'transfer' THEN raw_amount ELSE 0 END), 2) AS net_gross
             FROM v_effective_transactions
             GROUP BY strftime('%Y-%m', date)
             ORDER BY month
@@ -63,6 +72,8 @@ class Stats:
                    COALESCE(c.category_type, 'expense') AS category_type,
                    strftime('%Y-%m', t.date) AS month,
                    ROUND(SUM(t.adjusted_amount), 2) AS total,
+                   ROUND(SUM(t.adjusted_amount / a.ownership_ratio), 2) AS total_unsplit,
+                   ROUND(SUM(t.amount), 2) AS total_gross,
                    COUNT(*) AS count
             FROM transactions t
             JOIN accounts a ON a.id = t.account_id
@@ -203,6 +214,8 @@ class Stats:
             WITH txn_with_period AS (
                 SELECT
                     t.adjusted_amount,
+                    (t.adjusted_amount / a.ownership_ratio) AS unsplit_amount,
+                    t.amount AS raw_amount,
                     COALESCE(c.category_type, 'expense') AS category_type,
                     p.period
                 FROM transactions t
@@ -217,7 +230,13 @@ class Stats:
                 period,
                 ROUND(SUM(CASE WHEN adjusted_amount > 0 THEN adjusted_amount ELSE 0 END), 2) AS total_income,
                 ROUND(SUM(CASE WHEN adjusted_amount < 0 THEN adjusted_amount ELSE 0 END), 2) AS total_expenses,
-                ROUND(SUM(adjusted_amount), 2) AS net
+                ROUND(SUM(adjusted_amount), 2) AS net,
+                ROUND(SUM(CASE WHEN unsplit_amount > 0 THEN unsplit_amount ELSE 0 END), 2) AS total_income_unsplit,
+                ROUND(SUM(CASE WHEN unsplit_amount < 0 THEN unsplit_amount ELSE 0 END), 2) AS total_expenses_unsplit,
+                ROUND(SUM(unsplit_amount), 2) AS net_unsplit,
+                ROUND(SUM(CASE WHEN raw_amount > 0 THEN raw_amount ELSE 0 END), 2) AS total_income_gross,
+                ROUND(SUM(CASE WHEN raw_amount < 0 THEN raw_amount ELSE 0 END), 2) AS total_expenses_gross,
+                ROUND(SUM(raw_amount), 2) AS net_gross
             FROM txn_with_period
             GROUP BY period
             ORDER BY period
@@ -230,6 +249,8 @@ class Stats:
                    COALESCE(c.category_type, 'expense') AS category_type,
                    p.period AS month,
                    ROUND(SUM(t.adjusted_amount), 2) AS total,
+                   ROUND(SUM(t.adjusted_amount / a.ownership_ratio), 2) AS total_unsplit,
+                   ROUND(SUM(t.amount), 2) AS total_gross,
                    COUNT(*) AS count
             FROM transactions t
             JOIN v_salary_periods p ON t.id = p.transaction_id
@@ -340,27 +361,36 @@ class Stats:
 
         self.db.commit()
 
-    def monthly_summary(self, month: str = None, period_type: str = "calendar") -> list[dict]:
+    def monthly_summary(self, month: str = None, period_type: str = "calendar",
+                        unsplit: bool = False, gross: bool = False) -> list[dict]:
         """Get monthly income/expenses/net.
 
         Args:
             month: Optional filter 'YYYY-MM'. If None, returns all months.
             period_type: 'calendar' or 'salary'.
+            unsplit: If True, returns unsplit (household net) values.
+            gross: If True, returns gross (household raw) values.
 
         Returns list of dicts with month, total_income, total_expenses, net.
         """
         cur = self.db.get_cursor()
         view = "v_salary_period_summary" if period_type == "salary" else "v_monthly_summary"
         col = "period" if period_type == "salary" else "month"
+        suffix = ""
+        if gross:
+            suffix = "_gross"
+        elif unsplit:
+            suffix = "_unsplit"
+
         if month:
             cur.execute(
-                f"SELECT {col}, total_income, total_expenses, net "
+                f"SELECT {col}, total_income{suffix}, total_expenses{suffix}, net{suffix} "
                 f"FROM {view} WHERE {col} = ?",
                 (month,),
             )
         else:
             cur.execute(
-                f"SELECT {col}, total_income, total_expenses, net "
+                f"SELECT {col}, total_income{suffix}, total_expenses{suffix}, net{suffix} "
                 f"FROM {view}"
             )
         return [
@@ -368,18 +398,21 @@ class Stats:
             for r in cur.fetchall()
         ]
 
-    def cash_flow_summary(self, month: str = None, period_type: str = "default") -> list[dict]:
+    def cash_flow_summary(self, month: str = None, period_type: str = "default",
+                          unsplit: bool = False, gross: bool = False) -> list[dict]:
         """Get monthly cash flow summary (Operating, Transfers, Net).
 
         Args:
             month: Optional filter 'YYYY-MM'. If None, returns all months.
             period_type: 'default', 'calendar', or 'salary'.
+            unsplit: If True, returns unsplit (household net) values.
+            gross: If True, returns gross (household raw) values.
 
         Returns:
             list of dicts with:
                 - period: "YYYY-MM"
-                - operating: Operating cash flow (non-transfer on tracked accounts)
-                - transfers: Transfers cash flow (non-neutralized transfers from tracked accounts)
+                - operating: Operating cash flow
+                - transfers: Transfers cash flow
                 - net: operating + transfers
         """
         if period_type == "default":
@@ -395,6 +428,16 @@ class Stats:
         else:
             period_expr = "strftime('%Y-%m', t.date)"
             join_periods = ""
+
+        if gross:
+            operating_col = "t.amount"
+            transfer_col = "t.amount * COALESCE(tl.ratio, 1.0)"
+        elif unsplit:
+            operating_col = "(t.adjusted_amount / t.ownership_ratio)"
+            transfer_col = "t.amount * COALESCE(tl.ratio, 1.0)"
+        else:
+            operating_col = "t.adjusted_amount"
+            transfer_col = "t.amount * t.ownership_ratio * COALESCE(tl.ratio, 1.0)"
 
         query = f"""
             WITH txn_with_period AS (
@@ -417,8 +460,8 @@ class Stats:
                     t.id,
                     t.period,
                     t.category_type,
-                    t.adjusted_amount,
-                    t.amount * t.ownership_ratio * COALESCE(tl.ratio, 1.0) AS transfer_raw_amount,
+                    {operating_col} AS op_amount,
+                    {transfer_col} AS tr_amount,
                     COALESCE(tl.to_account_id, t.associated_account_id) AS target_account_id
                 FROM txn_with_period t
                 LEFT JOIN transaction_links tl ON tl.from_transaction_id = t.id 
@@ -428,8 +471,8 @@ class Stats:
                 SELECT
                     t.period,
                     t.category_type,
-                    t.adjusted_amount,
-                    t.transfer_raw_amount,
+                    t.op_amount,
+                    t.tr_amount,
                     CASE
                         WHEN t.id IN (SELECT from_transaction_id FROM transaction_links WHERE link_type = 'internal_transfer') THEN 1
                         WHEN t.id IN (SELECT to_transaction_id FROM transaction_links WHERE link_type = 'internal_transfer') THEN 1
@@ -442,10 +485,10 @@ class Stats:
             )
             SELECT
                 period,
-                ROUND(SUM(CASE WHEN category_type != 'transfer' THEN adjusted_amount ELSE 0.0 END), 2) AS operating,
-                ROUND(SUM(CASE WHEN category_type = 'transfer' AND is_neutral = 0 THEN transfer_raw_amount ELSE 0.0 END), 2) AS transfers,
-                ROUND(SUM(CASE WHEN category_type != 'transfer' THEN adjusted_amount ELSE 0.0 END) + 
-                      SUM(CASE WHEN category_type = 'transfer' AND is_neutral = 0 THEN transfer_raw_amount ELSE 0.0 END), 2) AS net
+                ROUND(SUM(CASE WHEN category_type != 'transfer' THEN op_amount ELSE 0.0 END), 2) AS operating,
+                ROUND(SUM(CASE WHEN category_type = 'transfer' AND is_neutral = 0 THEN tr_amount ELSE 0.0 END), 2) AS transfers,
+                ROUND(SUM(CASE WHEN category_type != 'transfer' THEN op_amount ELSE 0.0 END) + 
+                      SUM(CASE WHEN category_type = 'transfer' AND is_neutral = 0 THEN tr_amount ELSE 0.0 END), 2) AS net
             FROM transfers_with_neutrality
             {"WHERE period = ?" if month else ""}
             GROUP BY period
@@ -469,7 +512,8 @@ class Stats:
 
     def category_total(self, category_id: int, month: str = None,
                        date_from: date = None, date_to: date = None,
-                       period_type: str = "calendar") -> dict:
+                       period_type: str = "calendar",
+                       unsplit: bool = False, gross: bool = False) -> dict:
         """Get total for a category including all children.
 
         Args:
@@ -477,6 +521,8 @@ class Stats:
             month: Optional 'YYYY-MM' filter.
             date_from/date_to: Optional date range.
             period_type: 'calendar' or 'salary'.
+            unsplit: If True, returns unsplit total.
+            gross: If True, returns gross total.
 
         Returns dict with category_id, total, count.
         """
@@ -511,9 +557,15 @@ class Stats:
 
         where = " AND ".join(conditions)
 
+        amount_col = "t.adjusted_amount"
+        if gross:
+            amount_col = "t.raw_amount"
+        elif unsplit:
+            amount_col = "t.unsplit_amount"
+
         cur = self.db.get_cursor()
         cur.execute(
-            f"SELECT ROUND(SUM(t.adjusted_amount), 2), COUNT(*) "
+            f"SELECT ROUND(SUM({amount_col}), 2), COUNT(*) "
             f"FROM {from_clause} WHERE {where}",
             params,
         )
@@ -525,30 +577,39 @@ class Stats:
         }
 
     def top_spending(self, month: str = None, limit: int = 10,
-                     period_type: str = "calendar") -> list[dict]:
-        """Top spending categories by adjusted_amount.
+                     period_type: str = "calendar",
+                     unsplit: bool = False, gross: bool = False) -> list[dict]:
+        """Top spending categories.
 
         Args:
             month: Optional 'YYYY-MM' filter.
             limit: Max categories to return.
             period_type: 'calendar' or 'salary'.
+            unsplit: If True, returns unsplit totals.
+            gross: If True, returns gross totals.
 
         Returns list of dicts sorted by total spending (most negative first).
         """
         cur = self.db.get_cursor()
         params = []
-        conditions = ["total < 0"]
         view = "v_category_salary_period" if period_type == "salary" else "v_category_monthly"
         col = "month"
+        total_col = "total"
+        if gross:
+            total_col = "total_gross"
+        elif unsplit:
+            total_col = "total_unsplit"
+
+        conditions = [f"{total_col} < 0"]
         if month:
             conditions.append(f"{col} = ?")
             params.append(month)
 
         where = " AND ".join(conditions)
         cur.execute(
-            f"SELECT category_name, category_id, {col}, total, count "
+            f"SELECT category_name, category_id, {col}, {total_col}, count "
             f"FROM {view} WHERE {where} "
-            f"ORDER BY total ASC LIMIT ?",
+            f"ORDER BY {total_col} ASC LIMIT ?",
             params + [limit],
         )
         return [
@@ -558,7 +619,8 @@ class Stats:
         ]
 
     def trend(self, category_id: int, date_from: date = None,
-              date_to: date = None, period_type: str = "calendar") -> list[dict]:
+              date_to: date = None, period_type: str = "calendar",
+              unsplit: bool = False, gross: bool = False) -> list[dict]:
         """Monthly breakdown for a category (including children).
 
         Returns list of dicts with month, total, count.
@@ -586,10 +648,15 @@ class Stats:
             params.append(date_to)
 
         where = " AND ".join(conditions)
+        total_col = "total"
+        if gross:
+            total_col = "total_gross"
+        elif unsplit:
+            total_col = "total_unsplit"
 
         cur = self.db.get_cursor()
         cur.execute(
-            f"SELECT {col}, ROUND(SUM(total), 2), SUM(count) "
+            f"SELECT {col}, ROUND(SUM({total_col}), 2), SUM(count) "
             f"FROM {view} WHERE {where} "
             f"GROUP BY {col} ORDER BY {col}",
             params,
@@ -599,13 +666,16 @@ class Stats:
             for r in cur.fetchall()
         ]
 
-    def compare(self, period: str = None, period_type: str = "calendar") -> list[dict]:
+    def compare(self, period: str = None, period_type: str = "calendar",
+                unsplit: bool = False, gross: bool = False) -> list[dict]:
         """Month-over-month comparison.
 
         Args:
             period: 'YYYY-MM' for calendar or 'YYYY-MM' for salary period starting that month.
                     If None, compares last two periods.
             period_type: 'calendar' (1st-last) or 'salary' (25th-24th).
+            unsplit: If True, returns unsplit comparison.
+            gross: If True, returns gross comparison.
 
         Returns list of dicts with period, total_income, total_expenses, net,
                 prev_ prefixed fields, and delta fields.
@@ -615,9 +685,9 @@ class Stats:
         if period_type == "salary":
             # Salary period: 25th of previous month to 24th of current month
             # Period '2026-03' means Feb 25 - Mar 24
-            rows = self._salary_period_summary(cur)
+            rows = self._salary_period_summary(cur, unsplit=unsplit, gross=gross)
         else:
-            rows = self._calendar_month_summary(cur)
+            rows = self._calendar_month_summary(cur, unsplit=unsplit, gross=gross)
 
         if len(rows) < 2 and period is None:
             # Not enough data for comparison, just return what we have
@@ -659,10 +729,15 @@ class Stats:
 
         return result
 
-    def _calendar_month_summary(self, cur) -> list[dict]:
+    def _calendar_month_summary(self, cur, unsplit: bool = False, gross: bool = False) -> list[dict]:
+        suffix = ""
+        if gross:
+            suffix = "_gross"
+        elif unsplit:
+            suffix = "_unsplit"
         cur.execute(
-            "SELECT month, total_income, total_expenses, net "
-            "FROM v_monthly_summary ORDER BY month"
+            f"SELECT month, total_income{suffix}, total_expenses{suffix}, net{suffix} "
+            f"FROM v_monthly_summary ORDER BY month"
         )
         return [
             {"period": r[0], "total_income": r[1] or 0.0,
@@ -670,13 +745,18 @@ class Stats:
             for r in cur.fetchall()
         ]
 
-    def _salary_period_summary(self, cur) -> list[dict]:
+    def _salary_period_summary(self, cur, unsplit: bool = False, gross: bool = False) -> list[dict]:
         """Aggregate by salary period (25th to 24th of next month).
         Period label is the month of the 24th, e.g. '2026-03' = Feb 25 - Mar 24.
         """
+        suffix = ""
+        if gross:
+            suffix = "_gross"
+        elif unsplit:
+            suffix = "_unsplit"
         cur.execute(
-            "SELECT period, total_income, total_expenses, net "
-            "FROM v_salary_period_summary ORDER BY period"
+            f"SELECT period, total_income{suffix}, total_expenses{suffix}, net{suffix} "
+            f"FROM v_salary_period_summary ORDER BY period"
         )
         return [
             {"period": r[0], "total_income": r[1] or 0.0,
@@ -685,7 +765,8 @@ class Stats:
         ]
 
     def external_transfers_summary(
-        self, month: str = None, period_type: str = "calendar"
+        self, month: str = None, period_type: str = "calendar",
+        unsplit: bool = False, gross: bool = False
     ) -> list[dict]:
         """Calculate net capital transfers to external accounts.
 
@@ -710,15 +791,19 @@ class Stats:
             period_expr = "strftime('%Y-%m', t.date)"
             join_periods = ""
 
-        # We construct the query to select transaction date/amount, ownership ratio, and resolve target account.
-        # Net transferred = -1 * t.amount * a_orig.ownership_ratio * COALESCE(tl.ratio, 1.0)
+        # Determine target net amount expression based on flags
+        if gross or unsplit:
+            amount_expr = "-1.0 * t.amount * COALESCE(tl.ratio, 1.0)"
+        else:
+            amount_expr = "-1.0 * t.amount * a_orig.ownership_ratio * COALESCE(tl.ratio, 1.0)"
+
         if month:
             query = f"""
                 WITH resolved_transfers AS (
                     SELECT
                         {period_expr} AS period,
                         COALESCE(tl.to_account_id, c.associated_account_id) AS target_account_id,
-                        -1.0 * t.amount * a_orig.ownership_ratio * COALESCE(tl.ratio, 1.0) AS net_amount
+                        {amount_expr} AS net_amount
                     FROM transactions t
                     JOIN accounts a_orig ON t.account_id = a_orig.id
                     {join_periods}
@@ -744,7 +829,7 @@ class Stats:
                     SELECT
                         {period_expr} AS period,
                         COALESCE(tl.to_account_id, c.associated_account_id) AS target_account_id,
-                        -1.0 * t.amount * a_orig.ownership_ratio * COALESCE(tl.ratio, 1.0) AS net_amount
+                        {amount_expr} AS net_amount
                     FROM transactions t
                     JOIN accounts a_orig ON t.account_id = a_orig.id
                     {join_periods}

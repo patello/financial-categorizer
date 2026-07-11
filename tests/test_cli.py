@@ -681,6 +681,53 @@ def test_cli_manual_match_flexible(temp_db, monkeypatch, capsys):
     assert cur.fetchone() is None
 
 
+def test_cli_unsplit_and_gross_stats(temp_db, monkeypatch, capsys):
+    # Setup accounts and transactions
+    aid = temp_db.add_account("Shared Joint", ownership_ratio=0.5)
+    c = Categorizer(temp_db)
+    food_id = c.add_category("Food")
+    
+    cur = temp_db.get_cursor()
+    cur.execute(
+        "INSERT INTO transactions (date, description, amount, account_id, category_id) "
+        "VALUES ('2026-06-14', 'Kortköp MAXI ICA', -1000.0, ?, ?)",
+        (aid, food_id)
+    )
+    temp_db.commit()
+    temp_db.recalculate_adjusted_amounts()
+
+    # 1. stats-summary default (adjusted = -500.0)
+    monkeypatch.setattr(sys, "argv", ["cli.py", "--db", temp_db.db_file, "stats-summary"])
+    capsys.readouterr()
+    main()
+    captured = capsys.readouterr()
+    assert "expenses=" in captured.out
+    assert "-500.00" in captured.out
+
+    # 2. stats-summary with --unsplit (unsplit = -1000.0)
+    monkeypatch.setattr(sys, "argv", ["cli.py", "--db", temp_db.db_file, "stats-summary", "--unsplit"])
+    capsys.readouterr()
+    main()
+    captured = capsys.readouterr()
+    assert "expenses=" in captured.out
+    assert "-1000.00" in captured.out
+
+    # 3. stats-summary with --gross (gross = -1000.0)
+    monkeypatch.setattr(sys, "argv", ["cli.py", "--db", temp_db.db_file, "stats-summary", "--gross"])
+    capsys.readouterr()
+    main()
+    captured = capsys.readouterr()
+    assert "expenses=" in captured.out
+    assert "-1000.00" in captured.out
+
+    # 4. stats-summary with both --unsplit and --gross (should raise SystemExit/argparse error)
+    monkeypatch.setattr(sys, "argv", ["cli.py", "--db", temp_db.db_file, "stats-summary", "--unsplit", "--gross"])
+    capsys.readouterr()
+    with pytest.raises(SystemExit):
+        main()
+
+
+
 
 
 

@@ -759,12 +759,20 @@ def cmd_stats_summary(args):
     try:
         pt = resolve_period_type(db, args.period_type)
         stats = Stats(db)
-        rows = stats.monthly_summary(month=args.month, period_type=pt)
+        rows = stats.monthly_summary(month=args.month, period_type=pt,
+                                     unsplit=args.unsplit, gross=args.gross)
         if not rows:
             print("No data found.")
             return
+
+        mode_label = ""
+        if args.gross:
+            mode_label = " (gross)"
+        elif args.unsplit:
+            mode_label = " (unsplit)"
+
         for r in rows:
-            print(f"{r['month']}  income={r['total_income']:>10.2f}  "
+            print(f"{r['month']}{mode_label}  income={r['total_income']:>10.2f}  "
                   f"expenses={r['total_expenses']:>10.2f}  net={r['net']:>10.2f}")
     finally:
         db.disconnect()
@@ -786,8 +794,15 @@ def cmd_stats_category(args):
             lookup["id"], month=args.month,
             date_from=args.from_date, date_to=args.to_date,
             period_type=pt,
+            unsplit=args.unsplit, gross=args.gross,
         )
-        print(f"{args.name}: total={result['total']:>10.2f}  count={result['count']}")
+        mode_label = "total"
+        if args.gross:
+            mode_label = "gross_total"
+        elif args.unsplit:
+            mode_label = "unsplit_total"
+
+        print(f"{args.name}: {mode_label}={result['total']:>10.2f}  count={result['count']}")
     finally:
         db.disconnect()
 
@@ -808,13 +823,21 @@ def cmd_stats_trend(args):
             lookup["id"],
             date_from=args.from_date, date_to=args.to_date,
             period_type=pt,
+            unsplit=args.unsplit, gross=args.gross,
         )
         if not rows:
             print("No data found.")
             return
+
+        mode_label = "total"
+        if args.gross:
+            mode_label = "gross_total"
+        elif args.unsplit:
+            mode_label = "unsplit_total"
+
         print(f"Trend for {args.name}:")
         for r in rows:
-            print(f"  {r['month']}  total={r['total']:>10.2f}  count={r['count']}")
+            print(f"  {r['month']}  {mode_label}={r['total']:>10.2f}  count={r['count']}")
     finally:
         db.disconnect()
 
@@ -824,11 +847,19 @@ def cmd_stats_top(args):
     try:
         pt = resolve_period_type(db, args.period_type)
         stats = Stats(db)
-        rows = stats.top_spending(month=args.month, limit=args.limit, period_type=pt)
+        rows = stats.top_spending(month=args.month, limit=args.limit, period_type=pt,
+                                  unsplit=args.unsplit, gross=args.gross)
         if not rows:
             print("No spending data found.")
             return
-        print(f"Top spending{(' for ' + args.month) if args.month else ''}:")
+
+        mode_label = ""
+        if args.gross:
+            mode_label = " (gross)"
+        elif args.unsplit:
+            mode_label = " (unsplit)"
+
+        print(f"Top spending{mode_label}{(' for ' + args.month) if args.month else ''}:")
         for r in rows:
             month_str = r['month'] if not args.month else ''
             month_col = f"{month_str}  " if month_str else ""
@@ -842,16 +873,23 @@ def cmd_stats_transfers(args):
     try:
         pt = resolve_period_type(db, args.period_type)
         stats = Stats(db)
-        rows = stats.external_transfers_summary(month=args.month, period_type=pt)
+        rows = stats.external_transfers_summary(month=args.month, period_type=pt,
+                                                unsplit=args.unsplit, gross=args.gross)
         if not rows:
             print("No transfers found.")
             return
+
+        mode_label = ""
+        if args.gross:
+            mode_label = " (gross)"
+        elif args.unsplit:
+            mode_label = " (unsplit)"
 
         current_period = None
         for r in rows:
             if r["period"] != current_period:
                 current_period = r["period"]
-                print(f"\nPeriod: {current_period}")
+                print(f"\nPeriod: {current_period}{mode_label}")
             sign = "+" if r["net_transferred"] >= 0 else ""
             print(f"  {r['account_name']}: {sign}{r['net_transferred']:.2f}")
     finally:
@@ -1180,26 +1218,33 @@ def cmd_stats_compare(args):
     try:
         resolved_pt = resolve_period_type(db, args.period_type)
         stats = Stats(db)
-        result = stats.compare(period=args.month, period_type=resolved_pt)
+        result = stats.compare(period=args.month, period_type=resolved_pt,
+                               unsplit=args.unsplit, gross=args.gross)
         if not result:
             print("Not enough data for comparison.")
             return
 
+        mode_label = ""
+        if args.gross:
+            mode_label = " (gross)"
+        elif args.unsplit:
+            mode_label = " (unsplit)"
+
         if isinstance(result, list):
             # Not enough periods for comparison
             for r in result:
-                print(f"{r['period']}  income={r['total_income']:>10.2f}  "
+                print(f"{r['period']}{mode_label}  income={r['total_income']:>10.2f}  "
                       f"expenses={r['total_expenses']:>10.2f}  net={r['net']:>10.2f}")
             return
 
         pt = "salary period" if resolved_pt == "salary" else "month"
-        print(f"Period: {result['period']} ({pt})")
+        print(f"Period: {result['period']} ({pt}){mode_label}")
         print(f"  Income:   {result['total_income']:>10.2f}")
         print(f"  Expenses: {result['total_expenses']:>10.2f}")
         print(f"  Net:      {result['net']:>10.2f}")
 
         if "prev_period" in result:
-            print(f"\nvs {result['prev_period']}:")
+            print(f"\nvs {result['prev_period']}{mode_label}:")
             for field, label in [("income", "Income"), ("expense", "Expenses"), ("net", "Net")]:
                 delta = result[f"{field}_delta"]
                 pct = result[f"{field}_pct"]
@@ -1272,16 +1317,24 @@ def cmd_stats_cashflow(args):
     try:
         pt = resolve_period_type(db, args.period_type)
         stats = Stats(db)
-        rows = stats.cash_flow_summary(month=args.month, period_type=pt)
+        rows = stats.cash_flow_summary(month=args.month, period_type=pt,
+                                       unsplit=args.unsplit, gross=args.gross)
         if not rows:
             print("No data found.")
             return
         
+        mode_label = ""
+        if args.gross:
+            mode_label = " (Gross)"
+        elif args.unsplit:
+            mode_label = " (Unsplit)"
+
         header_period = "Period" if pt == "salary" else "Month"
-        print(f"{header_period:<10}  {'Operating':>12}  {'Transfers':>12}  {'Net':>12}")
-        print("-" * 54)
+        header_period_label = f"{header_period}{mode_label}"
+        print(f"{header_period_label:<20}  {'Operating':>12}  {'Transfers':>12}  {'Net':>12}")
+        print("-" * 64)
         for r in rows:
-            print(f"{r['period']:<10}  {r['operating']:>12.2f}  {r['transfers']:>12.2f}  {r['net']:>12.2f}")
+            print(f"{r['period']:<20}  {r['operating']:>12.2f}  {r['transfers']:>12.2f}  {r['net']:>12.2f}")
     finally:
         db.disconnect()
 
@@ -1446,6 +1499,9 @@ def main():
     p_stats_summary.add_argument("--month", help="Filter to YYYY-MM")
     p_stats_summary.add_argument("--period-type", choices=["calendar", "salary", "default"], default="default",
                                  help="Period type: calendar, salary, or default (dynamically determined by active salary config)")
+    g_stats_summary = p_stats_summary.add_mutually_exclusive_group()
+    g_stats_summary.add_argument("--unsplit", action="store_true", help="Undo joint account split (household net)")
+    g_stats_summary.add_argument("--gross", action="store_true", help="Undo split and ignore reimbursements (household raw)")
     p_stats_summary.set_defaults(func=cmd_stats_summary)
 
     # stats category
@@ -1456,6 +1512,9 @@ def main():
     p_stats_cat.add_argument("--to", dest="to_date", type=lambda s: __import__('datetime').date.fromisoformat(s), help="End date (YYYY-MM-DD)")
     p_stats_cat.add_argument("--period-type", choices=["calendar", "salary", "default"], default="default",
                                  help="Period type: calendar, salary, or default (dynamically determined by active salary config)")
+    g_stats_cat = p_stats_cat.add_mutually_exclusive_group()
+    g_stats_cat.add_argument("--unsplit", action="store_true", help="Undo joint account split (household net)")
+    g_stats_cat.add_argument("--gross", action="store_true", help="Undo split and ignore reimbursements (household raw)")
     p_stats_cat.set_defaults(func=cmd_stats_category)
 
     # stats trend
@@ -1465,6 +1524,9 @@ def main():
     p_stats_trend.add_argument("--to", dest="to_date", type=lambda s: __import__('datetime').date.fromisoformat(s), help="End date (YYYY-MM-DD)")
     p_stats_trend.add_argument("--period-type", choices=["calendar", "salary", "default"], default="default",
                                  help="Period type: calendar, salary, or default (dynamically determined by active salary config)")
+    g_stats_trend = p_stats_trend.add_mutually_exclusive_group()
+    g_stats_trend.add_argument("--unsplit", action="store_true", help="Undo joint account split (household net)")
+    g_stats_trend.add_argument("--gross", action="store_true", help="Undo split and ignore reimbursements (household raw)")
     p_stats_trend.set_defaults(func=cmd_stats_trend)
 
     # stats top
@@ -1473,6 +1535,9 @@ def main():
     p_stats_top.add_argument("--limit", type=int, default=10, help="Max categories (default: 10)")
     p_stats_top.add_argument("--period-type", choices=["calendar", "salary", "default"], default="default",
                                  help="Period type: calendar, salary, or default (dynamically determined by active salary config)")
+    g_stats_top = p_stats_top.add_mutually_exclusive_group()
+    g_stats_top.add_argument("--unsplit", action="store_true", help="Undo joint account split (household net)")
+    g_stats_top.add_argument("--gross", action="store_true", help="Undo split and ignore reimbursements (household raw)")
     p_stats_top.set_defaults(func=cmd_stats_top)
 
     # stats-transfers
@@ -1480,6 +1545,9 @@ def main():
     p_stats_transfers.add_argument("--month", help="Filter to YYYY-MM")
     p_stats_transfers.add_argument("--period-type", choices=["calendar", "salary", "default"], default="default",
                                    help="Period type: calendar, salary, or default (dynamically determined by active salary config)")
+    g_stats_transfers = p_stats_transfers.add_mutually_exclusive_group()
+    g_stats_transfers.add_argument("--unsplit", action="store_true", help="Undo joint account split (household net)")
+    g_stats_transfers.add_argument("--gross", action="store_true", help="Undo split and ignore reimbursements (household raw)")
     p_stats_transfers.set_defaults(func=cmd_stats_transfers)
 
     # recalculate
@@ -1554,6 +1622,9 @@ def main():
     p_compare.add_argument("--month", help="Period to compare (YYYY-MM, default: latest)")
     p_compare.add_argument("--period-type", choices=["calendar", "salary", "default"], default="default",
                            help="Period type: calendar, salary, or default (dynamically determined by active salary config)")
+    g_compare = p_compare.add_mutually_exclusive_group()
+    g_compare.add_argument("--unsplit", action="store_true", help="Undo joint account split (household net)")
+    g_compare.add_argument("--gross", action="store_true", help="Undo split and ignore reimbursements (household raw)")
     p_compare.set_defaults(func=cmd_stats_compare)
 
     # salary-config
@@ -1581,6 +1652,9 @@ def main():
     p_cf.add_argument("--month", help="Specific month (YYYY-MM)")
     p_cf.add_argument("--period-type", choices=["calendar", "salary", "default"], default="default",
                       help="Period type: calendar, salary, or default (dynamically determined by active salary config)")
+    g_cf = p_cf.add_mutually_exclusive_group()
+    g_cf.add_argument("--unsplit", action="store_true", help="Undo joint account split (household net)")
+    g_cf.add_argument("--gross", action="store_true", help="Undo split and ignore reimbursements (household raw)")
     p_cf.set_defaults(func=cmd_stats_cashflow)
 
     args = parser.parse_args()

@@ -58,19 +58,18 @@ All data lives in a single SQLite database (`data/finance.db` by default).
 - **transaction_links** — connects transfers and reimbursements
 
 ### Views
-- `v_effective_transactions` — all transactions with adjusted amounts
-- `v_monthly_summary` — income, expenses, net per month
-- `v_category_monthly` — category totals per month
+- `v_effective_transactions` — all transactions with adjusted, unsplit, and raw amounts
+- `v_monthly_summary` — income, expenses, net per month (includes unsplit and gross aggregations)
+- `v_category_monthly` — category totals per month (includes unsplit and gross aggregations)
 - `v_daily_spending` — daily spending breakdown
 
-### Adjusted amounts
+### Adjusted, Unsplit, and Gross amounts
 
-`adjusted_amount` is a denormalized column on every transaction, pre-computed from:
+1. `adjusted_amount` (Personal Share): Your share of the transaction. Calculated as `amount * account.ownership_ratio` (base), then adjusted by transfers and reimbursements.
+2. `unsplit_amount` (Household Net): Full household cost net of reimbursements. Calculated as `adjusted_amount / account.ownership_ratio`. Enabled in stats with the `--unsplit` flag.
+3. `raw_amount` (Household Raw): Full raw household cost before split and before reimbursements (i.e. the raw bank statement amount). Enabled in stats with the `--gross` flag.
 
-1. `amount * account.ownership_ratio` (base)
-2. Transaction link adjustments (transfers neutralize both sides, external transfers zero out)
-
-Stats and views read this column directly — no JOINs at query time. Run `recalculate` to refresh after any manual changes.
+Stats and views read these columns directly. Run `recalculate` to refresh after any manual changes.
 
 ## Security & Data Integrity
 
@@ -120,12 +119,13 @@ The following commands require confirmation:
 | `transactions [--category <name>] [--uncategorized] [--non-zero] [--account <name>] [--limit <n>]` | Search and list transactions |
 | `manual-match <txn> <cat>` | Manually assign a category |
 | `manual-unmatch <txn>` | Remove a manual categorization override |
-| `stats-summary [--period-type <type>]` | Monthly income/expenses/net |
-| `stats-category <name> [--period-type <type>]` | Category total with subcategory rollup |
-| `stats-trend <name> [--period-type <type>]` | Monthly breakdown for a category |
-| `stats-top [--period-type <type>]` | Top spending categories |
-| `stats-transfers [--month <YYYY-MM>] [--period-type <type>]` | Net capital transfers to external accounts |
-| `stats-cashflow [--month <YYYY-MM>] [--period-type <type>]` | Monthly cash flow summary (Operating, Transfers, Net) |
+| `stats-summary [--month <YYYY-MM>] [--period-type <type>] [--unsplit | --gross]` | Monthly income/expenses/net (supports `--unsplit` or `--gross`) |
+| `stats-category <name> [--month <YYYY-MM>] [--from <date>] [--to <date>] [--period-type <type>] [--unsplit | --gross]` | Category total with subcategory rollup (supports `--unsplit` or `--gross`) |
+| `stats-trend <name> [--from <date>] [--to <date>] [--period-type <type>] [--unsplit | --gross]` | Monthly breakdown for a category (supports `--unsplit` or `--gross`) |
+| `stats-top [--month <YYYY-MM>] [--limit <n>] [--period-type <type>] [--unsplit | --gross]` | Top spending categories (supports `--unsplit` or `--gross`) |
+| `stats-transfers [--month <YYYY-MM>] [--period-type <type>] [--unsplit | --gross]` | Net capital transfers to external accounts (supports `--unsplit` or `--gross`) |
+| `stats-compare [--month <YYYY-MM>] [--period-type <type>] [--unsplit | --gross]` | Month-over-month comparison (supports `--unsplit` or `--gross`) |
+| `stats-cashflow [--month <YYYY-MM>] [--period-type <type>] [--unsplit | --gross]` | Monthly cash flow summary (Operating, Transfers, Net; supports `--unsplit` or `--gross`) |
 | `link <from> [to] --type [--to-account <name_or_id>] [--ratio <val> \| --ratio-to <val> \| --amount <val>] [--dry-run]` | Link transactions (specify `--to-account` for external transfers, or ratio/amount options to customize values; `--dry-run` to preview) |
 | `unlink <id> [--yes]` | Remove a link (requires confirmation or `-y`) |
 | `links` | List transaction links |
