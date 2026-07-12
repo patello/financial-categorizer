@@ -77,11 +77,23 @@ def cmd_import(args):
 
         cat_result = None
         if total["imported"] > 0:
-            cat_result = cat.categorize_new()
+            cat_result = cat.categorize_new(auto_close=getattr(args, "close", False))
             logger.info(f"Categorized {cat_result['matched']} new transactions "
                         f"({cat_result['unmatched']} uncategorized)")
+            
+            # Print recurring payment matching results
+            rr = cat_result.get("recurring_results", {})
+            for l in rr.get("linked", []):
+                logger.info(f"Linked transaction '{l['tx_desc']}' on {l['tx_date']} to recurring '{l['recurring_name']}'")
+            for r in rr.get("resumed", []):
+                print(f"[INFO] Transaction matching cancelled subscription '{r['name']}' detected. Automatically resumed subscription (new series ID: {r['new_id']}).")
+            for w in rr.get("warnings", []):
+                print(f"[WARNING] Active recurring payment '{w['name']}' (expected around {w['expected']}) was not found in transaction history.")
+            for c in rr.get("closed", []):
+                print(f"[INFO] Automatically closed missing/dead recurring payment '{c['name']}' (end date set to {c['end_date']}).")
 
         if total["settled_pending"] > 0:
+
             logger.info(f"Settled {total['settled_pending']} pending transactions")
 
         # Print parsing failures to stderr (always, regardless of quiet/compact/verbose)
@@ -429,12 +441,31 @@ def cmd_categorize(args):
             result = cat.categorize_all()
             print(f"Re-categorized all: {result['matched']} matched, "
                   f"{result['unmatched']} unmatched")
+            
+            # Also run recurring linking when re-categorizing all
+            from financial_categorizer.recurring import RecurringManager
+            rm = RecurringManager(db)
+            rr = rm.link_transactions(dry_run=False, auto_close=getattr(args, "close", False))
+            for l in rr.get("linked", []):
+                logger.info(f"Linked transaction '{l['tx_desc']}' on {l['tx_date']} to recurring '{l['recurring_name']}'")
         else:
-            result = cat.categorize_new()
+            result = cat.categorize_new(auto_close=getattr(args, "close", False))
             print(f"Categorized new: {result['matched']} matched, "
                   f"{result['unmatched']} unmatched")
+            
+            # Print recurring payment matching results
+            rr = result.get("recurring_results", {})
+            for l in rr.get("linked", []):
+                logger.info(f"Linked transaction '{l['tx_desc']}' on {l['tx_date']} to recurring '{l['recurring_name']}'")
+            for r in rr.get("resumed", []):
+                print(f"[INFO] Transaction matching cancelled subscription '{r['name']}' detected. Automatically resumed subscription (new series ID: {r['new_id']}).")
+            for w in rr.get("warnings", []):
+                print(f"[WARNING] Active recurring payment '{w['name']}' (expected around {w['expected']}) was not found in transaction history.")
+            for c in rr.get("closed", []):
+                print(f"[INFO] Automatically closed missing/dead recurring payment '{c['name']}' (end date set to {c['end_date']}).")
     finally:
         db.disconnect()
+
 
 
 def cmd_transactions(args):
@@ -1376,6 +1407,357 @@ def cmd_stats_cashflow(args):
         db.disconnect()
 
 
+def format_interval(i_type, i_val):
+    if i_type == "monthly":
+        if i_val == 1: return "monthly"
+        if i_val == 3: return "quarterly"
+        return f"every {i_val}m"
+    elif i_type == "weekly":
+        if i_val == 1: return "weekly"
+        return f"every {i_val}w"
+    elif i_type == "yearly":
+        if i_val == 1: return "yearly"
+        return f"every {i_val}y"
+    elif i_type == "days":
+        if i_val == 1: return "daily"
+        return f"every {i_val}d"
+    return f"{i_type} ({i_val})"
+
+
+def format_day(dom, dow, wom):
+    if dom is not None:
+        if dom == -1: return "last day"
+        return f"day {dom}"
+    if dow is not None:
+        days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        day_name = days[dow] if 0 <= dow < 7 else f"day {dow}"
+        if wom is not None:
+            if wom == -1: return f"last {day_name}"
+            prefix = {1: "1st", 2: "2nd", 3: "3rd", 4: "4th", 5: "5th"}.get(wom, f"{wom}th")
+            return f"{prefix} {day_name}"
+        return day_name
+    return "N/A"
+
+
+def cmd_recurring(args):
+    db = get_db(args.db)
+    try:
+        cur = db.get_cursor()
+        sql = """
+            SELECT r.id, r.name, r.pattern, r.interval_type, r.interval_value, r.start_date, r.end_date, c.name
+            FROM recurring_payments r
+            LEFT JOIN categories c ON r.category_id = c.id
+        """
+        clauses = []
+        if args.status == "active":
+            clauses.append("r.end_date IS NULL")
+        elif args.status == "cancelled":
+            clauses.append("r.end_date IS NOT NULL")
+        
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+            
+        cur.execute(sql)
+        rows = cur.fetchall()
+        if not rows:
+            print("No recurring payments found.")
+            return
+            
+        print("Recurring Payments:")
+        for r in rows:
+            status_str = "Active" if r[6] is None else f"Cancelled ({r[6]})"
+            int_str = format_interval(r[3], r[4])
+            print(f"  [{r[0]}] {r[1]}  pattern='{r[2]}'  interval={int_str}  "
+                  f"start={r[5]}  category={r[7] or 'None'}  status={status_str}")
+    finally:
+        db.disconnect()
+
+
+def cmd_add_recurring(args):
+    db = get_db(args.db)
+    try:
+        # Resolve category if passed
+        category_id = None
+        if args.category:
+            cur = db.get_cursor()
+            cur.execute("SELECT id FROM categories WHERE name = ?", (args.category,))
+            row = cur.fetchone()
+            if not row:
+                print(f"[ERROR] Category '{args.category}' not found.", file=sys.stderr)
+                return
+            category_id = row[0]
+
+        # Resolve account if passed
+        account_id = None
+        if args.account:
+            cur = db.get_cursor()
+            cur.execute("SELECT id FROM accounts WHERE name = ?", (args.account,))
+            row = cur.fetchone()
+            if not row:
+                print(f"[ERROR] Account '{args.account}' not found.", file=sys.stderr)
+                return
+            account_id = row[0]
+
+        from financial_categorizer.recurring import RecurringManager
+        rm = RecurringManager(db)
+
+        if args.dry_run:
+            db.connect()
+            db.conn.execute("BEGIN TRANSACTION")
+            try:
+                new_id = rm.add_recurring(
+                    name=args.name, pattern=args.pattern, match_type=args.match_type,
+                    amount_min=args.amount_min, amount_max=args.amount_max,
+                    interval_type=args.interval, interval_value=args.interval_val,
+                    day_of_month=args.day_of_month, day_of_week=args.day_of_week,
+                    week_of_month=args.week_of_month, start_date=args.start_date,
+                    category_id=category_id, account_id=account_id,
+                    tolerance_days=args.tolerance
+                )
+                result = rm.link_transactions(dry_run=True)
+                print(f"[DRY-RUN] Would add recurring payment '{args.name}' (ID: {new_id})")
+                print(f"[DRY-RUN] Would link {len(result['linked'])} transactions:")
+                for l in result["linked"]:
+                    print(f"  - {l['tx_date']}  {l['tx_desc']:<40}  amount={l['tx_amount']:>10.2f}")
+            finally:
+                db.conn.rollback()
+        else:
+            new_id = rm.add_recurring(
+                name=args.name, pattern=args.pattern, match_type=args.match_type,
+                amount_min=args.amount_min, amount_max=args.amount_max,
+                interval_type=args.interval, interval_value=args.interval_val,
+                day_of_month=args.day_of_month, day_of_week=args.day_of_week,
+                week_of_month=args.week_of_month, start_date=args.start_date,
+                category_id=category_id, account_id=account_id,
+                tolerance_days=args.tolerance
+            )
+            print(f"Successfully added recurring payment '{args.name}' (ID: {new_id})")
+            result = rm.link_transactions(dry_run=False)
+            print(f"Linked {len(result['linked'])} transactions to this configuration.")
+            for l in result["linked"]:
+                logger.info(f"Linked transaction '{l['tx_desc']}' on {l['tx_date']} to recurring '{args.name}'")
+    finally:
+        db.disconnect()
+
+
+def cmd_update_recurring(args):
+    db = get_db(args.db)
+    try:
+        # Resolve category if passed
+        category_id = None
+        if args.category:
+            cur = db.get_cursor()
+            cur.execute("SELECT id FROM categories WHERE name = ?", (args.category,))
+            row = cur.fetchone()
+            if not row:
+                print(f"[ERROR] Category '{args.category}' not found.", file=sys.stderr)
+                return
+            category_id = row[0]
+
+        # Resolve account if passed
+        account_id = None
+        if args.account:
+            cur = db.get_cursor()
+            cur.execute("SELECT id FROM accounts WHERE name = ?", (args.account,))
+            row = cur.fetchone()
+            if not row:
+                print(f"[ERROR] Account '{args.account}' not found.", file=sys.stderr)
+                return
+            account_id = row[0]
+
+        from financial_categorizer.recurring import RecurringManager
+        rm = RecurringManager(db)
+
+        # Build update kwargs
+        kwargs = {}
+        if args.name is not None: kwargs["name"] = args.name
+        if args.pattern is not None: kwargs["pattern"] = args.pattern
+        if args.match_type is not None: kwargs["match_type"] = args.match_type
+        if args.amount_min is not None: kwargs["amount_min"] = args.amount_min
+        if args.amount_max is not None: kwargs["amount_max"] = args.amount_max
+        if args.interval is not None: kwargs["interval_type"] = args.interval
+        if args.interval_val is not None: kwargs["interval_value"] = args.interval_val
+        if args.day_of_month is not None: kwargs["day_of_month"] = args.day_of_month
+        if args.day_of_week is not None: kwargs["day_of_week"] = args.day_of_week
+        if args.week_of_month is not None: kwargs["week_of_month"] = args.week_of_month
+        if args.start_date is not None: kwargs["start_date"] = args.start_date
+        if args.tolerance is not None: kwargs["tolerance_days"] = args.tolerance
+        if args.category is not None: kwargs["category_id"] = category_id
+        if args.account is not None: kwargs["account_id"] = account_id
+
+        if args.dry_run:
+            db.connect()
+            db.conn.execute("BEGIN TRANSACTION")
+            try:
+                success = rm.update_recurring(args.id, **kwargs)
+                if not success:
+                    print(f"[ERROR] Recurring payment ID {args.id} not found.", file=sys.stderr)
+                    return
+                result = rm.link_transactions(dry_run=True)
+                print(f"[DRY-RUN] Would update recurring payment ID {args.id}")
+                print(f"[DRY-RUN] Would link {len(result['linked'])} transactions:")
+                for l in result["linked"]:
+                    print(f"  - {l['tx_date']}  {l['tx_desc']:<40}  amount={l['tx_amount']:>10.2f}")
+            finally:
+                db.conn.rollback()
+        else:
+            success = rm.update_recurring(args.id, **kwargs)
+            if not success:
+                print(f"[ERROR] Recurring payment ID {args.id} not found.", file=sys.stderr)
+                return
+            print(f"Successfully updated recurring payment ID {args.id}")
+            result = rm.link_transactions(dry_run=False)
+            print(f"Linked {len(result['linked'])} transactions to this configuration.")
+    finally:
+        db.disconnect()
+
+
+def cmd_remove_recurring(args):
+    db = get_db(args.db)
+    try:
+        from financial_categorizer.recurring import RecurringManager
+        rm = RecurringManager(db)
+        success = rm.remove_recurring(args.id, hard=args.hard, cancel_date=args.date)
+        if not success:
+            print(f"[ERROR] Recurring payment ID {args.id} not found.", file=sys.stderr)
+            return
+        if args.hard:
+            print(f"Successfully deleted recurring payment ID {args.id} completely.")
+        else:
+            print(f"Successfully cancelled recurring payment ID {args.id}.")
+    finally:
+        db.disconnect()
+
+
+def cmd_discover_recurring(args):
+    db = get_db(args.db)
+    try:
+        from financial_categorizer.recurring import RecurringManager
+        rm = RecurringManager(db)
+        candidates = rm.discover_recurring_candidates(dry_run=args.dry_run)
+        if not candidates:
+            print("No recurring payment candidates found.")
+            return
+
+        if args.dry_run:
+            print("Discovered Recurring Candidates (Preview - not saved):")
+            for c in candidates:
+                int_str = format_interval(c['interval_type'], c['interval_value'])
+                day_str = format_day(c['day_of_month'], c['day_of_week'], c.get('week_of_month'))
+                print(f"  Name: {c['name']:<30} | Interval: {int_str:<12} | Day: {day_str:<15} | Count: {c['tx_count']:>2} | Range: {c['amount_min']:.2f} to {c['amount_max']:.2f}")
+        else:
+            print(f"Auto-discovery completed. Saved {len(candidates)} new recurring payment configurations to database:")
+            for c in candidates:
+                int_str = format_interval(c['interval_type'], c['interval_value'])
+                day_str = format_day(c['day_of_month'], c['day_of_week'], c.get('week_of_month'))
+                print(f"  [{c.get('id', 'NEW')}] {c['name']:<30} | {int_str:<12} | Day: {day_str:<15} | Count: {c['tx_count']}")
+    finally:
+        db.disconnect()
+
+
+
+def cmd_stats_recurring(args):
+    db = get_db(args.db)
+    try:
+        from financial_categorizer.recurring import RecurringManager
+        rm = RecurringManager(db)
+        pt = resolve_period_type(db, args.period_type) if hasattr(args, "period_type") else "salary"
+        stats = rm.get_recurring_stats(query=args.query, period_type=pt, period=args.month)
+
+        if args.query:
+            if not stats["details"]:
+                print(f"No subscription matching '{args.query}' found.")
+                return
+
+            print(f"Subscription Report: {args.query}")
+            print("=" * 64)
+            for item in stats["details"]:
+                c = item["config"]
+                status_str = "Active" if c["end_date"] is None else f"Cancelled/Completed ({c['end_date']})"
+                int_str = format_interval(c['interval_type'], c['interval_value'])
+                print(f"Series ID: {c['id']}")
+                print(f"  Name:          {c['name']}")
+                print(f"  Pattern:       '{c['pattern']}' ({c['match_type']})")
+                print(f"  Account:       {c['account_name'] or 'All'}")
+                print(f"  Category:      {c['category_name'] or 'None'}")
+                print(f"  Interval:      {int_str}")
+                print(f"  Start Date:    {c['start_date']}")
+                print(f"  End Date:      {c['end_date'] or 'Ongoing'}")
+                print(f"  Status:        {status_str}")
+                print(f"  Lifetime Paid: {item['lifetime_total']:>10.2f} SEK")
+                print(f"  YTD Paid:      {item['ytd_total']:>10.2f} SEK")
+                if item["next_expected"]:
+                    print(f"  Next Expected: {item['next_expected']} (±{c['tolerance_days']} days)")
+                
+                print("\n  Matched Transactions:")
+                if not item["transactions"]:
+                    print("    No transactions matched.")
+                else:
+                    for tx in item["transactions"]:
+                        print(f"    - {tx['date']} | {tx['description']:<40} | amount={tx['amount']:>10.2f} | period={tx['salary_period']}")
+                print("-" * 64)
+        else:
+            if not stats["details"]:
+                print("No recurring payment templates defined. Run 'discover-recurring' to create one.")
+                return
+                
+            active_list = [item for item in stats["details"] if item["active"]]
+            cancelled_list = [item for item in stats["details"] if not item["active"]]
+
+            print("=== Active Subscriptions & Bills ===")
+            print(f"{'ID':<4} {'Name':<25} {'Interval':<15} {'Next Expected':<13} {'Monthly Cost':>13}")
+            print("-" * 75)
+            for item in active_list:
+                c = item["config"]
+                next_str = str(item["next_expected"]) if item["next_expected"] else "N/A"
+                
+                outflow_amt = 0.0
+                if item["last_payment"]:
+                    outflow_amt = item["last_payment"]["amount"]
+                elif c["amount_min"] is not None and c["amount_max"] is not None:
+                    outflow_amt = (c["amount_min"] + c["amount_max"]) / 2
+                elif c["amount_min"] is not None:
+                    outflow_amt = c["amount_min"]
+                
+                monthly_equiv = 0.0
+                if outflow_amt < 0:
+                    if c["interval_type"] == "monthly":
+                        monthly_equiv = outflow_amt / c["interval_value"]
+                    elif c["interval_type"] == "weekly":
+                        monthly_equiv = outflow_amt * 4.33 / c["interval_value"]
+                    elif c["interval_type"] == "yearly":
+                        monthly_equiv = outflow_amt / 12.0 / c["interval_value"]
+                    elif c["interval_type"] == "days":
+                        monthly_equiv = outflow_amt * 30.4 / c["interval_value"]
+
+                int_str = format_interval(c['interval_type'], c['interval_value'])
+                print(f"[{c['id']:>2}] {c['name']:<25} {int_str:<15} {next_str:<13} {monthly_equiv:>10.2f} SEK")
+            
+            print("-" * 75)
+            print(f"Active Subscriptions Outflow: {stats['total_monthly_outflow']:>10.2f} SEK / month")
+            print(f"Total Active Series Count:     {stats['active_count']}")
+
+            if cancelled_list:
+                from datetime import date
+                from financial_categorizer.recurring import _to_date
+                recent_cancelled = []
+                for item in cancelled_list:
+                    c = item["config"]
+                    end_dt = _to_date(c["end_date"])
+                    if end_dt and (date.today() - end_dt).days <= 365:
+                        recent_cancelled.append(item)
+
+                if recent_cancelled:
+                    print("\n=== Recently Cancelled / Inactive Series (Last 12 Months) ===")
+                    for item in recent_cancelled:
+                        c = item["config"]
+                        print(f"  [{c['id']}] {c['name']} (Ended: {c['end_date']}) - Total historical spend: {item['lifetime_total']:.2f} SEK")
+    finally:
+        db.disconnect()
+
+
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="financial-categorizer",
@@ -1391,11 +1773,14 @@ def main():
     p_import.add_argument("--account", help="Account name (default: derived from filename)")
     p_import.add_argument("--no-auto-account", action="store_true",
                           help="Don't auto-create account if missing (raises error)")
+    p_import.add_argument("--close", action="store_true",
+                          help="Auto-close active recurring transactions that are missing expected payments")
     g_verbosity = p_import.add_mutually_exclusive_group()
     g_verbosity.add_argument("--quiet", "-q", action="store_true", help="Quiet mode: suppress all output except warnings/errors")
     g_verbosity.add_argument("--compact", "-c", action="store_true", help="Compact mode: show only summary counts")
     g_verbosity.add_argument("--verbose", "-v", action="store_true", help="Verbose mode: show detailed transaction and rule information")
     p_import.set_defaults(func=cmd_import)
+
 
     # accounts
     p_accounts = subparsers.add_parser("accounts", help="List all accounts")
@@ -1503,7 +1888,10 @@ def main():
     # categorize
     p_cat = subparsers.add_parser("categorize", help="Categorize transactions")
     p_cat.add_argument("--all", action="store_true", help="Re-categorize all transactions")
+    p_cat.add_argument("--close", action="store_true",
+                        help="Auto-close active recurring transactions that are missing expected payments")
     p_cat.set_defaults(func=cmd_categorize)
+
 
     # transactions
     p_txns = subparsers.add_parser("transactions", help="Search and list transactions")
@@ -1700,7 +2088,79 @@ def main():
     g_cf.add_argument("--gross", action="store_true", help="Undo split and ignore reimbursements (household raw)")
     p_cf.set_defaults(func=cmd_stats_cashflow)
 
+    # recurring
+    p_rec = subparsers.add_parser("recurring", help="List recurring payments configurations")
+    p_rec.add_argument("--status", choices=["active", "cancelled", "all"], default="active",
+                       help="Filter by status (default: active)")
+    p_rec.set_defaults(func=cmd_recurring)
+
+    # add-recurring
+    p_add_rec = subparsers.add_parser("add-recurring", help="Manually create a new recurring config")
+    p_add_rec.add_argument("name", help="Name of subscription / recurring payment")
+    p_add_rec.add_argument("pattern", help="Description pattern to match")
+    p_add_rec.add_argument("--match-type", choices=["regex", "exact", "contains"], default="contains",
+                           help="Match type (default: contains)")
+    p_add_rec.add_argument("--amount-min", type=float, help="Minimum transaction amount")
+    p_add_rec.add_argument("--amount-max", type=float, help="Maximum transaction amount")
+    p_add_rec.add_argument("--interval", choices=["monthly", "weekly", "yearly", "days"], default="monthly",
+                           help="Interval type (default: monthly)")
+    p_add_rec.add_argument("--interval-val", type=int, default=1, help="Interval multiplier value (default: 1)")
+    p_add_rec.add_argument("--day-of-month", type=int, help="Expected day of month (1-31, -1 for last day)")
+    p_add_rec.add_argument("--day-of-week", type=int, help="Expected day of week (0=Mon, 6=Sun)")
+    p_add_rec.add_argument("--week-of-month", type=int, choices=[1, 2, 3, 4, 5, -1],
+                           help="Expected week of month (1-5, -1 for last)")
+    p_add_rec.add_argument("--start-date", help="Start date (YYYY-MM-DD, default: today)")
+    p_add_rec.add_argument("--tolerance", type=int, default=4, help="Tolerance window in days (default: 4)")
+    p_add_rec.add_argument("--category", help="Category name to auto-assign/track")
+    p_add_rec.add_argument("--account", help="Limit to specific account name")
+    p_add_rec.add_argument("--dry-run", action="store_true", help="Preview matches without writing to DB")
+    p_add_rec.set_defaults(func=cmd_add_recurring)
+
+    # update-recurring
+    p_upd_rec = subparsers.add_parser("update-recurring", help="Update an existing recurring config")
+    p_upd_rec.add_argument("id", type=int, help="Recurring Payment ID")
+    p_upd_rec.add_argument("--name", help="Name of subscription / recurring payment")
+    p_upd_rec.add_argument("--pattern", help="Description pattern to match")
+    p_upd_rec.add_argument("--match-type", choices=["regex", "exact", "contains"], help="Match type")
+    p_upd_rec.add_argument("--amount-min", type=float, help="Minimum transaction amount")
+    p_upd_rec.add_argument("--amount-max", type=float, help="Maximum transaction amount")
+    p_upd_rec.add_argument("--interval", choices=["monthly", "weekly", "yearly", "days"], help="Interval type")
+    p_upd_rec.add_argument("--interval-val", type=int, help="Interval multiplier value")
+    p_upd_rec.add_argument("--day-of-month", type=int, help="Expected day of month (1-31, -1 for last day)")
+    p_upd_rec.add_argument("--day-of-week", type=int, help="Expected day of week (0=Mon, 6=Sun)")
+    p_upd_rec.add_argument("--week-of-month", type=int, choices=[1, 2, 3, 4, 5, -1],
+                           help="Expected week of month (1-5, -1 for last)")
+    p_upd_rec.add_argument("--start-date", help="Start date (YYYY-MM-DD)")
+    p_upd_rec.add_argument("--tolerance", type=int, help="Tolerance window in days")
+    p_upd_rec.add_argument("--category", help="Category name to auto-assign/track")
+    p_upd_rec.add_argument("--account", help="Limit to specific account name")
+    p_upd_rec.add_argument("--dry-run", action="store_true", help="Preview matches without writing to DB")
+    p_upd_rec.set_defaults(func=cmd_update_recurring)
+
+    # remove-recurring
+    p_rem_rec = subparsers.add_parser("remove-recurring", help="Cancel or delete a recurring payment")
+    p_rem_rec.add_argument("id", type=int, help="Recurring Payment ID")
+    p_rem_rec.add_argument("--hard", action="store_true",
+                           help="Delete configuration completely from the DB (otherwise soft-closes/cancels)")
+    p_rem_rec.add_argument("--date", help="Cancellation date (YYYY-MM-DD, defaults to date of last matched transaction)")
+    p_rem_rec.set_defaults(func=cmd_remove_recurring)
+
+    # discover-recurring
+    p_disc_rec = subparsers.add_parser("discover-recurring",
+                                       help="Auto-discover candidates and auto-close dead configurations")
+    p_disc_rec.add_argument("--dry-run", action="store_true", help="Preview candidates without writing them to DB")
+    p_disc_rec.set_defaults(func=cmd_discover_recurring)
+
+    # stats-recurring
+    p_stats_rec = subparsers.add_parser("stats-recurring", help="Display recurring outflow and subscriptions stats")
+    p_stats_rec.add_argument("query", nargs="?", help="Optional subscription name or ID to filter details")
+    p_stats_rec.add_argument("--period-type", choices=["calendar", "salary", "default"], default="default",
+                            help="Period type: calendar, salary, or default (dynamically determined by active salary config)")
+    p_stats_rec.add_argument("--month", help="Filter details by month/period (YYYY-MM)")
+    p_stats_rec.set_defaults(func=cmd_stats_recurring)
+
     args = parser.parse_args()
+
     if not args.command:
         parser.print_help()
         sys.exit(1)

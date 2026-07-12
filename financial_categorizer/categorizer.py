@@ -136,12 +136,14 @@ class Categorizer:
         if recalculate:
             self.db.recalculate_adjusted_amounts()
 
-    def categorize_new(self) -> dict:
+    def categorize_new(self, auto_close: bool = False) -> dict:
         """Categorize only uncategorized transactions (category_id IS NULL).
 
-        Skips transactions that already have a category (rule or manual).
+        Skips transactions that already have a category (rule or manual). Also automatically
+        links transactions to recurring templates.
 
-        Returns a dict with counts and detail lists: {'matched': int, 'unmatched': int, 'categorized_details': list}
+        Returns a dict with counts and detail lists:
+        {'matched': int, 'unmatched': int, 'categorized_details': list, 'recurring_results': dict}
         """
         cur = self.db.get_cursor()
         cur.execute(
@@ -165,6 +167,11 @@ class Categorizer:
         if matched > 0:
             self.db.commit()
             self.db.recalculate_adjusted_amounts()
+
+        # Link recurring payments
+        from financial_categorizer.recurring import RecurringManager
+        rm = RecurringManager(self.db)
+        rm_results = rm.link_transactions(dry_run=False, auto_close=auto_close)
 
         categorized_details = []
         if uncategorized:
@@ -195,8 +202,10 @@ class Categorizer:
         return {
             "matched": matched,
             "unmatched": len(uncategorized) - matched,
-            "categorized_details": categorized_details
+            "categorized_details": categorized_details,
+            "recurring_results": rm_results
         }
+
 
     def categorize_all(self) -> dict:
         """Re-categorize ALL transactions using current rules.

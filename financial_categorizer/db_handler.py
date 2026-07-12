@@ -193,16 +193,42 @@ class DatabaseHandler:
                             CHECK(match_type IN ('regex','exact','contains')),
                 created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )""")
-
         cur.execute("""
             CREATE TABLE IF NOT EXISTS metadata(
                 key   TEXT PRIMARY KEY,
                 value TEXT
             )""")
 
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS recurring_payments(
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                name            TEXT NOT NULL,
+                pattern         TEXT NOT NULL,
+                match_type      TEXT NOT NULL DEFAULT 'contains'
+                                CHECK(match_type IN ('regex', 'exact', 'contains')),
+                amount_min      REAL,
+                amount_max      REAL,
+                interval_type   TEXT NOT NULL CHECK(interval_type IN ('monthly', 'weekly', 'yearly', 'days')),
+                interval_value  INTEGER NOT NULL DEFAULT 1,
+                day_of_month    INTEGER,
+                day_of_week     INTEGER,
+                week_of_month   INTEGER CHECK(week_of_month IN (1, 2, 3, 4, 5, -1)),
+                tolerance_days  INTEGER NOT NULL DEFAULT 4,
+                start_date      DATE NOT NULL,
+                end_date        DATE,
+                category_id     INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+                account_id      INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
+                created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""")
+
         self.conn.commit()
 
         # Check and migrate schemas dynamically if tables already existed without the new columns
+        cur.execute("PRAGMA table_info(transactions)")
+        cols_tx = [row[1] for row in cur.fetchall()]
+        if "recurring_id" not in cols_tx:
+            cur.execute("ALTER TABLE transactions ADD COLUMN recurring_id INTEGER REFERENCES recurring_payments(id) ON DELETE SET NULL")
+
         cur.execute("PRAGMA table_info(transaction_links)")
         cols_links = [row[1] for row in cur.fetchall()]
         if "to_account_id" not in cols_links:
@@ -269,19 +295,25 @@ class DatabaseHandler:
                 
                 cur.execute("PRAGMA foreign_keys = OFF;")
                 cur.execute("BEGIN TRANSACTION;")
+                
+                # Step 1: Rename all corrupted tables to _old first.
+                # This prevents subsequent renames from rewriting foreign keys in newly recreated tables.
                 for table_name, old_sql in corrupted_tables:
-                    # Replace references to accounts_old with accounts
-                    new_sql = old_sql.replace('"accounts_old"', 'accounts').replace('accounts_old', 'accounts')
-                    
                     cur.execute(f"ALTER TABLE {table_name} RENAME TO {table_name}_old;")
+                
+                # Step 2: Recreate all corrupted tables with corrected SQL
+                for table_name, old_sql in corrupted_tables:
+                    new_sql = old_sql.replace('"accounts_old"', 'accounts').replace('accounts_old', 'accounts')
                     cur.execute(new_sql)
-                    
-                    # Copy columns dynamically
+                
+                # Step 3: Copy data from old tables to new tables, then drop old tables
+                for table_name, old_sql in corrupted_tables:
                     cur.execute(f"PRAGMA table_info({table_name}_old)")
                     cols = [r[1] for r in cur.fetchall()]
                     cols_str = ", ".join(f'"{c}"' for c in cols)
                     cur.execute(f"INSERT INTO {table_name} ({cols_str}) SELECT {cols_str} FROM {table_name}_old")
                     cur.execute(f"DROP TABLE {table_name}_old;")
+                
                 cur.execute("COMMIT;")
             except Exception as e:
                 try:
@@ -291,6 +323,7 @@ class DatabaseHandler:
                 raise e
             finally:
                 cur.execute("PRAGMA foreign_keys = ON;")
+
                 self.conn.isolation_level = old_isolation
             self.conn.commit()
             

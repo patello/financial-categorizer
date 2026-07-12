@@ -173,6 +173,12 @@ class Stats:
                     COALESCE((SELECT value FROM metadata WHERE key = 'salary_period_category_name'), 'Salary') AS salary_cat_name
             ),
             primary_salary_dates AS (
+                SELECT date FROM transactions WHERE recurring_id IN (
+                    SELECT id FROM recurring_payments WHERE name = 'Salary' OR category_id = (
+                        SELECT id FROM categories WHERE name = (SELECT salary_cat_name FROM settings)
+                    )
+                )
+                UNION
                 SELECT date
                 FROM (
                     SELECT 
@@ -188,7 +194,13 @@ class Stats:
                       AND t.amount > 0
                       AND a.type = 'tracked'
                 )
-                WHERE rank = 1
+                WHERE rank = 1 AND NOT EXISTS (
+                    SELECT 1 FROM transactions WHERE recurring_id IN (
+                        SELECT id FROM recurring_payments WHERE name = 'Salary' OR category_id = (
+                            SELECT id FROM categories WHERE name = (SELECT salary_cat_name FROM settings)
+                        )
+                    )
+                )
             )
             SELECT 
                 t.id AS transaction_id,
@@ -208,6 +220,7 @@ class Stats:
                 END AS period
             FROM transactions t
         """)
+
 
         cur.execute("""
             CREATE VIEW v_salary_period_summary AS

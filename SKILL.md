@@ -102,7 +102,58 @@ python cli.py stats-category Housing --period-type salary --month 2026-06
 
 If you do not specify a `--period-type` flag, it will automatically default to the setting configured via `set-salary-mode`.
 
+## Tracking Recurring Payments & Subscriptions
+
+This tool supports advanced, automated tracking and lifecycle management of recurring payments (e.g. Netflix, Spotify, broadband, utility bills) and income (e.g. Salary).
+
+### Core Concepts
+
+1. **Recurring Payments Table (`recurring_payments`)**
+   Defines the rules, intervals, expected days, amount ranges, and lifespans for each recurring item.
+2. **Subscription Lifecycle & Runs**
+   Resumed subscriptions (after cancellation) are tracked as separate runs/rows in `recurring_payments`.
+   * **Resumption**: If a transaction matches a pattern of a cancelled subscription (after its `end_date`), it automatically spawns a new run/configuration for the resumption.
+   * **Auto-Closing**: Active configurations that are missing expected payments are automatically closed (`end_date` is set to the last matched payment date) when running `discover-recurring` or passing the `--close` flag to `import` / `categorize`.
+3. **Flexible Date Intervals**
+   Supports strict date/day checking with a configured tolerance window:
+   * **Monthly**: Expected day of month (e.g. 25th, last day `-1`).
+   * **Weekly**: Expected weekday.
+   * **Yearly**: Expected month and day.
+   * **Days**: Custom interval (e.g. every 90 days).
+   * **Tolerance**: Tolerates shifts due to weekends/holidays (default 4 days).
+
+### Common Workflows
+
+#### 1. Auto-Discover Recurring Candidates
+Scan transaction history to auto-identify recurring items (such as monthly subscriptions or utility bills) and automatically save them:
+```bash
+# Preview candidates without writing to the database
+python cli.py discover-recurring --dry-run
+
+# Run auto-discovery and save configurations
+python cli.py discover-recurring
+```
+
+#### 2. Manually Add/Update Configurations
+```bash
+# Add a monthly Netflix subscription
+python cli.py add-recurring Netflix "netflix.com" --amount-min -149 --amount-max -189 --interval monthly --day-of-month 6 --category Media
+
+# Dry-run update previewing matches
+python cli.py update-recurring 1 --amount-max -219 --dry-run
+```
+
+#### 3. View Outflow Dashboard & Stats
+```bash
+# Active subscriptions monthly cost summary and expected next dates
+python cli.py stats-recurring
+
+# Detailed subscription history across active/cancelled runs and transaction lists
+python cli.py stats-recurring "Disney Plus"
+```
+
 ## Common Workflows
+
 
 ### Handling Shared-Expense Reimbursements
 
@@ -155,9 +206,9 @@ If you don't link them, your gross income and gross expenses will both be overst
 
 #### Composite Transactions (e.g. Reimbursement Baked into Salary)
 Often, a reimbursement is not a standalone transaction (like a Swish payment), but is packaged/baked into a larger composite transaction, such as a salary payment.
-For example, if your employer pays you a single amount of `57,683 SEK`, which contains:
-* `52,701.77 SEK` of actual labor income
-* `4,981.23 SEK` of expense reimbursement for a credit card charge
+For example, if your employer pays you a single amount of `50,000 SEK`, which contains:
+* `45,000 SEK` of actual labor income
+* `5,000 SEK` of expense reimbursement for a credit card charge
 
 To avoid distorting both income and expenses, you must split this composite transaction. In this system, you do this using **transaction links** with fractional ratios.
 
@@ -169,18 +220,19 @@ The `link` command provides three modes to simplify this:
 
 2. **Destination Ratio (`--ratio-to <float>`)**
    Calculates the ratio relative to the destination (`to_id`) transaction.
-   * For example, to fully reimburse/zero out the `First Card` expense of `-4,981.23 SEK` from your salary, use:
+   * For example, to fully reimburse/zero out the `First Card` expense of `-5,000 SEK` from your salary, use:
      ```bash
      python cli.py link <salary_txn_id> <expense_txn_id> --type reimbursement --ratio-to 1.0
      ```
-   * This automatically calculates the exact ratio ($4981.23 / 57683 \approx 0.086357$). It reduces the salary's `adjusted_amount` to `52,701.77 SEK` (reflecting your true labor income) and increases the credit card expense's `adjusted_amount` to `0.00 SEK` (reflecting your true net expense).
+   * This automatically calculates the exact ratio ($5000 / 50000 = 0.10$). It reduces the salary's `adjusted_amount` to `45,000 SEK` (reflecting your true labor income) and increases the credit card expense's `adjusted_amount` to `0.00 SEK` (reflecting your true net expense).
 
 3. **Exact Cash (`--amount <float>`)**
    Specify the exact cash amount in SEK being reimbursed.
-   * For example, to link exactly `4,981.23 SEK`:
+   * For example, to link exactly `5,000 SEK`:
      ```bash
-     python cli.py link <salary_txn_id> <expense_txn_id> --type reimbursement --amount 4981.23
+     python cli.py link <salary_txn_id> <expense_txn_id> --type reimbursement --amount 5000
      ```
+
 
 #### Dry-run Previews
 Always run with the `--dry-run` flag first to preview the downstream `adjusted_amount` effects before committing changes to the database:
@@ -280,13 +332,14 @@ Unmatched reimbursements (pending paybacks or refunds) are incoming transactions
 If the CLI output shows:
 ```
 Transactions (4):
-  [12] 2026-06-23   23539.00 SEK                      Personligt      [Uncategorized]     Lön
-  [15] 2026-06-18     312.50 SEK                      Personligt      [Uncategorized]     BARNBDR
-  [18] 2026-06-16     482.50 SEK                      Personligt      [Uncategorized]     Swish inbetalning ANDERSSON, THOMAS
-  [21] 2026-05-20      30.00 SEK                      Personligt      [Uncategorized]     Swish inbetalning ANDERSSON, THOMAS
+  [12] 2026-06-23   25000.00 SEK                      Personligt      [Uncategorized]     Lön
+  [15] 2026-06-18    1250.00 SEK                      Personligt      [Uncategorized]     BARNBDR
+  [18] 2026-06-16     500.00 SEK                      Personligt      [Uncategorized]     Swish inbetalning DOE, JOHN
+  [21] 2026-05-20      50.00 SEK                      Personligt      [Uncategorized]     Swish inbetalning DOE, JOHN
 ```
-* **Include**: `[18]` (+482.50) and `[21]` (+30.00) (positive Swish payments from an individual are reimbursement candidates).
+* **Include**: `[18]` (+500.00) and `[21]` (+50.00) (positive Swish payments from an individual are reimbursement candidates).
 * **Exclude**: `[12]` (Lön/Salary) and `[15]` (barnbidrag/regular benefit payment).
+
 
 ## Dependencies
 

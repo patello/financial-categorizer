@@ -137,6 +137,13 @@ The following commands require confirmation:
 | `set-salary-mode <mode>` | Set the salary period mode (`calendar`, `fixed`, `salary`) |
 | `set-salary-day <day>` | Set the fixed boundary day of the month (1-28) |
 | `set-salary-category <name>` | Set the category name used to scan for salary paydays |
+| `recurring [--status <active|cancelled|all>]` | List recurring payments configurations |
+| `add-recurring <name> <pattern> [options] [--dry-run]` | Manually create a recurring payment config and link transactions |
+| `update-recurring <id> [options] [--dry-run]` | Update recurring config fields and re-run transaction linking |
+| `remove-recurring <id> [--hard] [--date <YYYY-MM-DD>]` | Cancel (soft-close with end date) or hard-delete a recurring payment configuration |
+| `discover-recurring [--dry-run]` | Auto-discover recurring transaction patterns and auto-close dead configurations |
+| `stats-recurring [query] [--month <YYYY-MM>] [--period-type <type>]` | Display subscription stats dashboard or detail reports for matching subscriptions |
+
 
 ## Testing
 
