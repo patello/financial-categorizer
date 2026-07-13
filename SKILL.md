@@ -1,7 +1,13 @@
 ---
 name: financial-categorizer
 description: "Process bank transaction CSV exports (Nordea, ICA), auto-categorize transactions using configurable rules, manage transaction links, and generate analytical database views."
+metadata:
+  openclaw:
+    requires:
+      bins:
+        - python3
 ---
+
 
 # financial-categorizer
 
