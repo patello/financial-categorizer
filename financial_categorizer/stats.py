@@ -872,3 +872,287 @@ class Stats:
             for row in cur.fetchall()
         ]
 
+    def get_period_boundaries(self, as_of_date):
+        """Retrieve start date, end date, and period name for the period containing as_of_date.
+
+        Returns (start_date, next_payday_date, period_name)
+        """
+        from datetime import datetime, timedelta, date
+        from financial_categorizer.recurring import RecurringManager, _to_date
+        
+        cur = self.db.get_cursor()
+        cur.execute("SELECT key, value FROM metadata WHERE key LIKE 'salary_period_%'")
+        meta = dict(cur.fetchall())
+        mode = meta.get("salary_period_mode", "fixed")
+        fixed_day = int(meta.get("salary_period_fixed_day", "25"))
+        salary_cat_name = meta.get("salary_period_category_name", "Salary")
+
+        as_of_date = _to_date(as_of_date)
+
+        if mode == "salary":
+            cur.execute("""
+                WITH settings AS (
+                    SELECT 
+                        COALESCE((SELECT value FROM metadata WHERE key = 'salary_period_mode'), 'fixed') AS mode,
+                        COALESCE((SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'salary_period_fixed_day'), 25) AS fixed_day,
+                        COALESCE((SELECT value FROM metadata WHERE key = 'salary_period_category_name'), 'Salary') AS salary_cat_name
+                ),
+                primary_salary_dates AS (
+                    SELECT date FROM transactions WHERE recurring_id IN (
+                        SELECT id FROM recurring_payments WHERE name = 'Salary' OR category_id = (
+                            SELECT id FROM categories WHERE name = (SELECT salary_cat_name FROM settings)
+                        )
+                    )
+                    UNION
+                    SELECT date
+                    FROM (
+                        SELECT 
+                            t.date,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY strftime('%Y-%m', t.date) 
+                                ORDER BY t.amount DESC, t.date ASC
+                            ) AS rank
+                        FROM transactions t
+                        JOIN categories c ON t.category_id = c.id
+                        JOIN accounts a ON t.account_id = a.id
+                        WHERE c.name = (SELECT salary_cat_name FROM settings)
+                          AND t.amount > 0
+                          AND a.type = 'tracked'
+                    )
+                    WHERE rank = 1 AND NOT EXISTS (
+                        SELECT 1 FROM transactions WHERE recurring_id IN (
+                            SELECT id FROM recurring_payments WHERE name = 'Salary' OR category_id = (
+                                SELECT id FROM categories WHERE name = (SELECT salary_cat_name FROM settings)
+                            )
+                        )
+                    )
+                )
+                SELECT date FROM primary_salary_dates ORDER BY date ASC
+            """)
+            paydays = [_to_date(row[0]) for row in cur.fetchall()]
+            
+            past_paydays = [d for d in paydays if d <= as_of_date]
+            if past_paydays:
+                period_start = max(past_paydays)
+            else:
+                # Default to 1st of month
+                period_start = date(as_of_date.year, as_of_date.month, 1)
+
+            future_paydays = [d for d in paydays if d > period_start]
+            if future_paydays:
+                next_payday = min(future_paydays)
+            else:
+                # Project exactly 1 month
+                try:
+                    delta_y = (period_start.month + 1 - 1) // 12
+                    next_m = (period_start.month + 1 - 1) % 12 + 1
+                    next_y = period_start.year + delta_y
+                    last_day = RecurringManager.get_last_day_of_month(next_y, next_m)
+                    next_payday = date(next_y, next_m, min(period_start.day, last_day.day))
+                except Exception:
+                    next_payday = period_start + timedelta(days=30)
+            
+            period_name = period_start.strftime("%Y-%m")
+            return period_start, next_payday, period_name
+        else:
+            # Fixed day mode
+            from financial_categorizer.recurring import RecurringManager
+            if as_of_date.day >= fixed_day:
+                period_start = date(as_of_date.year, as_of_date.month, fixed_day)
+                delta_y = (as_of_date.month + 1 - 1) // 12
+                next_m = (as_of_date.month + 1 - 1) % 12 + 1
+                next_y = as_of_date.year + delta_y
+                last_day = RecurringManager.get_last_day_of_month(next_y, next_m)
+                next_payday = date(next_y, next_m, min(fixed_day, last_day.day))
+                period_name = next_payday.strftime("%Y-%m")
+            else:
+                prev_y = as_of_date.year if as_of_date.month > 1 else as_of_date.year - 1
+                prev_m = as_of_date.month - 1 if as_of_date.month > 1 else 12
+                last_day_prev = RecurringManager.get_last_day_of_month(prev_y, prev_m)
+                period_start = date(prev_y, prev_m, min(fixed_day, last_day_prev.day))
+                
+                last_day_curr = RecurringManager.get_last_day_of_month(as_of_date.year, as_of_date.month)
+                next_payday = date(as_of_date.year, as_of_date.month, min(fixed_day, last_day_curr.day))
+                period_name = next_payday.strftime("%Y-%m")
+                
+            return period_start, next_payday, period_name
+
+    def get_historical_daily_spend(self, as_of_date, window_days=30, level=1):
+        """Calculate average daily spending over window_days, grouped by category rollup level."""
+        from datetime import timedelta
+        from financial_categorizer.recurring import _to_date
+        
+        cur = self.db.get_cursor()
+        as_of_date = _to_date(as_of_date)
+        start_window = as_of_date - timedelta(days=window_days - 1)
+        
+        # Load categories to map hierarchy
+        cur.execute("SELECT id, name, parent_id FROM categories")
+        cat_map = {row[0]: {"name": row[1], "parent_id": row[2]} for row in cur.fetchall()}
+        
+        def get_category_rollup_name(cat_id):
+            if level == 0:
+                return "Total Spend"
+            if cat_id is None:
+                return "Other"
+            node = cat_map.get(cat_id)
+
+            if not node:
+                return "Other"
+            if level == 1:
+                # Follow parent pointers to the top-level parent
+                visited = set()
+                while node["parent_id"] is not None and node["parent_id"] not in visited:
+                    visited.add(node["parent_id"])
+                    parent = cat_map.get(node["parent_id"])
+                    if not parent:
+                        break
+                    node = parent
+                return node["name"]
+            # Default level 2 or others: use direct leaf category name
+            return node["name"]
+
+        cur.execute("""
+            SELECT t.category_id, COALESCE(c.category_type, 'expense') AS cat_type, t.adjusted_amount
+            FROM transactions t
+            JOIN accounts a ON a.id = t.account_id
+            LEFT JOIN categories c ON c.id = t.category_id
+            WHERE t.date BETWEEN ? AND ?
+              AND t.adjusted_amount IS NOT NULL
+              AND a.type = 'tracked'
+              AND t.recurring_id IS NULL
+        """, (str(start_window), str(as_of_date)))
+        
+        rows = cur.fetchall()
+        
+        category_totals = {}
+        total_sum = 0.0
+        for cat_id, cat_type, adj_amount in rows:
+            if cat_type != 'expense':
+                continue
+            name = get_category_rollup_name(cat_id)
+            category_totals[name] = category_totals.get(name, 0.0) + adj_amount
+            total_sum += adj_amount
+            
+        category_averages = {}
+        for name, total in category_totals.items():
+            avg_rate = total / window_days
+            # Filter out average daily spend less than 1 SEK in magnitude
+            if abs(avg_rate) < 1.0:
+                continue
+            category_averages[name] = avg_rate
+            
+        return {
+            "window_start": start_window,
+            "window_end": as_of_date,
+            "days": window_days,
+            "categories": category_averages,
+            "total_daily_average": total_sum / window_days
+        }
+
+
+    def get_projected_spend(self, as_of_date, window_days=30, level=1):
+        """Aggregate projected spending from as_of_date to the end of the period."""
+        from datetime import timedelta
+        from financial_categorizer.recurring import RecurringManager, _to_date
+        
+        cur = self.db.get_cursor()
+        as_of_date = _to_date(as_of_date)
+        
+        # Period boundaries
+        start_date, next_payday, period_name = self.get_period_boundaries(as_of_date)
+        
+        # Days remaining (projection starts the day after as_of_date)
+        remaining_days = max(0, (next_payday - as_of_date).days - 1)
+        projection_start = as_of_date + timedelta(days=1)
+        projection_end = next_payday - timedelta(days=1)
+        
+        # Period to date actual recurring (separated by type)
+        cur.execute("""
+            SELECT COALESCE(c.category_type, 'expense') AS type, SUM(t.adjusted_amount)
+            FROM transactions t
+            JOIN accounts a ON a.id = t.account_id
+            LEFT JOIN categories c ON c.id = t.category_id
+            WHERE t.date BETWEEN ? AND ?
+              AND t.adjusted_amount IS NOT NULL
+              AND a.type = 'tracked'
+              AND t.recurring_id IS NOT NULL
+            GROUP BY type
+        """, (str(start_date), str(as_of_date)))
+        rec_rows = {row[0]: row[1] for row in cur.fetchall()}
+        actual_rec_expense = rec_rows.get("expense", 0.0)
+        actual_rec_income = rec_rows.get("income", 0.0)
+
+        # Period to date actual non-recurring (separated by type)
+        cur.execute("""
+            SELECT COALESCE(c.category_type, 'expense') AS type, SUM(t.adjusted_amount)
+            FROM transactions t
+            JOIN accounts a ON a.id = t.account_id
+            LEFT JOIN categories c ON c.id = t.category_id
+            WHERE t.date BETWEEN ? AND ?
+              AND t.adjusted_amount IS NOT NULL
+              AND a.type = 'tracked'
+              AND t.recurring_id IS NULL
+            GROUP BY type
+        """, (str(start_date), str(as_of_date)))
+        non_rec_rows = {row[0]: row[1] for row in cur.fetchall()}
+        actual_non_rec_expense = non_rec_rows.get("expense", 0.0)
+        actual_non_rec_income = non_rec_rows.get("income", 0.0)
+        
+        actual_total_expense = actual_rec_expense + actual_non_rec_expense
+        actual_total_income = actual_rec_income + actual_non_rec_income
+        actual_net_flow = actual_total_expense + actual_total_income
+        
+        # Historical daily variable rates
+        hist = self.get_historical_daily_spend(as_of_date, window_days=window_days, level=level)
+        
+        # Project variable spend
+        projected_variable_categories = {}
+        projected_variable_total = 0.0
+        for name, rate in hist["categories"].items():
+            proj = rate * remaining_days
+            projected_variable_categories[name] = proj
+            projected_variable_total += proj
+            
+        # Upcoming expected recurring payments
+        upcoming_recurring = []
+        upcoming_recurring_total = 0.0
+        if remaining_days > 0:
+            rm = RecurringManager(self.db)
+            upcoming_recurring = rm.get_expected_in_range(projection_start, projection_end, period_start=start_date)
+
+            upcoming_recurring_total = sum(item["amount"] for item in upcoming_recurring)
+            
+        total_estimated = (actual_net_flow + projected_variable_total + upcoming_recurring_total)
+                           
+        return {
+            "period_name": period_name,
+            "period_start": start_date,
+            "period_end": next_payday,
+            "as_of_date": as_of_date,
+            "remaining_days": remaining_days,
+            "projection_start": projection_start if remaining_days > 0 else None,
+            "projection_end": projection_end if remaining_days > 0 else None,
+            "actual_recurring": actual_rec_expense + actual_rec_income,
+            "actual_non_recurring": actual_non_rec_expense + actual_non_rec_income,
+            "actual_total": actual_net_flow,
+            "actual_rec_expense": actual_rec_expense,
+            "actual_rec_income": actual_rec_income,
+            "actual_non_rec_expense": actual_non_rec_expense,
+            "actual_non_rec_income": actual_non_rec_income,
+            "actual_total_expense": actual_total_expense,
+            "actual_total_income": actual_total_income,
+            "actual_net_flow": actual_net_flow,
+            "historical_daily_averages": hist["categories"],
+            "historical_daily_total": hist["total_daily_average"],
+            "projected_variable_categories": projected_variable_categories,
+            "projected_variable_total": projected_variable_total,
+            "upcoming_recurring": upcoming_recurring,
+            "upcoming_recurring_total": upcoming_recurring_total,
+            "total_estimated": total_estimated
+        }
+
+
+
+
+

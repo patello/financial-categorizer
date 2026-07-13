@@ -799,3 +799,117 @@ class RecurringManager:
             "active_count": active_count,
             "total_monthly_outflow": total_monthly_outflow
         }
+
+    def get_expected_in_range(self, start_date: date, end_date: date, period_start: date = None) -> list[dict]:
+        """Generate expected payment occurrences and estimated adjusted amounts for active templates
+        within the date range [start_date, end_date] (inclusive).
+        """
+        cur = self.db.get_cursor()
+
+        
+        # Select active recurring templates
+        cur.execute("""
+            SELECT r.id, r.name, r.pattern, r.match_type, r.interval_type, r.interval_value,
+                   r.day_of_month, r.day_of_week, r.week_of_month, r.start_date, r.end_date,
+                   r.amount_min, r.amount_max, r.account_id, r.category_id, c.name
+            FROM recurring_payments r
+            LEFT JOIN categories c ON r.category_id = c.id
+            WHERE r.end_date IS NULL
+        """)
+        rows = cur.fetchall()
+        
+        expected_occurrences = []
+        
+        for row in rows:
+            conf = {
+                "id": row[0], "name": row[1], "pattern": row[2], "match_type": row[3],
+                "interval_type": row[4], "interval_value": row[5], "day_of_month": row[6],
+                "day_of_week": row[7], "week_of_month": row[8], "start_date": row[9],
+                "end_date": row[10], "amount_min": row[11], "amount_max": row[12],
+                "account_id": row[13], "category_id": row[14], "category_name": row[15]
+            }
+            
+            # Find last payment to anchor the projection
+            cur.execute("""
+                SELECT date, adjusted_amount, amount FROM transactions
+                WHERE recurring_id = ?
+                ORDER BY date DESC LIMIT 1
+            """, (conf["id"],))
+            last_pmt = cur.fetchone()
+            
+            if last_pmt:
+                anchor_dt = _to_date(last_pmt[0])
+                est_adjusted_amount = last_pmt[1]
+            else:
+                anchor_dt = _to_date(conf["start_date"])
+                # Resolve account ownership ratio to calculate estimated adjusted amount
+                ratio = 1.0
+                if conf["account_id"]:
+                    cur.execute("SELECT ownership_ratio FROM accounts WHERE id = ?", (conf["account_id"],))
+                    a_row = cur.fetchone()
+                    if a_row:
+                        ratio = a_row[0]
+                
+                val = 0.0
+                if conf["amount_min"] is not None and conf["amount_max"] is not None:
+                    val = (conf["amount_min"] + conf["amount_max"]) / 2
+                elif conf["amount_min"] is not None:
+                    val = conf["amount_min"]
+                est_adjusted_amount = val * ratio
+            
+            # Project dates starting from anchor_dt
+            def _next_expected_date(last_date: date) -> date:
+                if conf["interval_type"] == "monthly":
+                    delta_y = (last_date.month + conf["interval_value"] - 1) // 12
+                    next_m = (last_date.month + conf["interval_value"] - 1) % 12 + 1
+                    next_y = last_date.year + delta_y
+                    last_day_of_next = RecurringManager.get_last_day_of_month(next_y, next_m)
+                    if conf["day_of_month"] is not None:
+                        if conf["day_of_month"] == -1:
+                            return last_day_of_next
+                        else:
+                            return date(next_y, next_m, min(conf["day_of_month"], last_day_of_next.day))
+                    elif conf["day_of_week"] is not None and conf["week_of_month"] is not None:
+                        return RecurringManager.get_nth_weekday_of_month(next_y, next_m, conf["day_of_week"], conf["week_of_month"])
+                    else:
+                        start_d = _to_date(conf["start_date"])
+                        return date(next_y, next_m, min(start_d.day, last_day_of_next.day))
+                elif conf["interval_type"] == "weekly":
+                    return last_date + timedelta(weeks=conf["interval_value"])
+                elif conf["interval_type"] == "yearly":
+                    next_y = last_date.year + conf["interval_value"]
+                    start_d = _to_date(conf["start_date"])
+                    last_day_of_next = RecurringManager.get_last_day_of_month(next_y, start_d.month)
+                    return date(next_y, start_d.month, min(start_d.day, last_day_of_next.day))
+                elif conf["interval_type"] == "days":
+                    return last_date + timedelta(days=conf["interval_value"])
+                raise ValueError(f"Unknown interval type: {conf['interval_type']}")
+            
+            curr_dt = anchor_dt
+            # Iterate and find all expected dates inside range
+            if conf["interval_value"] <= 0:
+                continue
+                
+            iterations = 0
+            while iterations < 100:  # Safe guard boundary
+                iterations += 1
+                try:
+                    curr_dt = _next_expected_date(curr_dt)
+                except Exception:
+                    break
+                if curr_dt > end_date:
+                    break
+                lower_bound = period_start if period_start is not None else start_date
+                if curr_dt >= lower_bound:
+                    expected_occurrences.append({
+                        "config_id": conf["id"],
+                        "name": conf["name"],
+                        "date": curr_dt,
+                        "amount": est_adjusted_amount,
+                        "category_name": conf["category_name"] or "None"
+                    })
+
+                    
+        expected_occurrences.sort(key=lambda x: x["date"])
+        return expected_occurrences
+
