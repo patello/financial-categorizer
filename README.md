@@ -143,6 +143,10 @@ The following commands require confirmation:
 | `remove-recurring <id> [--hard] [--date <YYYY-MM-DD>]` | Cancel (soft-close with end date) or hard-delete a recurring payment configuration |
 | `discover-recurring [--dry-run]` | Auto-discover recurring transaction patterns and auto-close dead configurations |
 | `stats-recurring [query] [--month <YYYY-MM>] [--period-type <type>]` | Display subscription stats dashboard or detail reports for matching subscriptions |
+| `estimate-period [--days <int>] [--level <0|1|2>]` | Project spending and estimate total outflow remaining in current period (rollup levels: 0=none, 1=top, 2=detailed) |
+| `set-estimate-level <0|1|2>` | Set default category rollup level configuration for spending estimation |
+
+
 
 
 ## Testing

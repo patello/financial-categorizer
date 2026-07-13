@@ -1756,6 +1756,81 @@ def cmd_stats_recurring(args):
         db.disconnect()
 
 
+def cmd_estimate_period(args):
+    db = get_db(args.db)
+    try:
+        from financial_categorizer.stats import Stats
+        cur = db.get_cursor()
+        cur.execute("SELECT MAX(date) FROM transactions")
+        row = cur.fetchone()
+        if not row or not row[0]:
+            print("No transactions found in database to estimate projection.")
+            return
+        
+        from financial_categorizer.recurring import _to_date
+        as_of_date = _to_date(row[0])
+        
+        # Load estimation level preference
+        level = args.level
+        if level is None:
+            level = int(db.get_metadata("estimate_level", "0"))
+            
+        stats_mgr = Stats(db)
+        proj = stats_mgr.get_projected_spend(as_of_date, window_days=args.days, level=level)
+        
+        # Split recurring expectations
+        upcoming_rec_expenses = sum(item['amount'] for item in proj['upcoming_recurring'] if item['amount'] < 0)
+        upcoming_rec_income = sum(item['amount'] for item in proj['upcoming_recurring'] if item['amount'] >= 0)
+        
+        var_expenses = sum(val for val in proj['projected_variable_categories'].values() if val < 0)
+        var_incomes = sum(val for val in proj['projected_variable_categories'].values() if val >= 0)
+        
+        projected_expenses = var_expenses + upcoming_rec_expenses
+        projected_income = var_incomes + upcoming_rec_income
+        
+        print(f"Period:                    {proj['period_name']} ({proj['period_start']} to {proj['period_end']})")
+        print(f"Last Imported Transaction: {proj['as_of_date']}")
+        print(f"Days Remaining:            {proj['remaining_days']} days", end="")
+        if proj['remaining_days'] > 0:
+            print(f" ({proj['projection_start']} to {proj['projection_end']})")
+        else:
+            print()
+            
+        print("\n=== Current Period-to-Date Actuals ===")
+        print(f"  Total Actual Expenses: {proj['actual_total_expense']:>14.2f} SEK")
+        print(f"  Total Actual Income:   {proj['actual_total_income']:>14.2f} SEK")
+        print(f"  Net Period Flow So Far:{proj['actual_net_flow']:>14.2f} SEK")
+        
+        print(f"\n=== Projected for Remaining {proj['remaining_days']} Days ===")
+        print(f"  Average Expenses       {proj['projected_variable_total']:>14.2f} SEK ({proj['historical_daily_total']:>7.2f} SEK/day)")
+        if level > 0:
+            for name, val in sorted(proj['projected_variable_categories'].items()):
+                print(f"    {name:<20} {val:>14.2f} SEK")
+        print(f"  Recurring Expenses     {upcoming_rec_expenses:>14.2f} SEK")
+        print(f"  Projected Expenses     {projected_expenses:>14.2f} SEK")
+        print(f"  Projected Income       {projected_income:>14.2f} SEK")
+
+        
+        print("\n" + "=" * 50)
+        print(f"ESTIMATED NET FULL PERIOD:{proj['total_estimated']:>14.2f} SEK")
+
+        print("=" * 50)
+
+        
+    finally:
+        db.disconnect()
+
+
+
+def cmd_set_estimate_level(args):
+    db = get_db(args.db)
+    try:
+        db.set_metadata("estimate_level", str(args.level))
+        level_label = {0: "0 (No Categories)", 1: "1 (Top Categories)", 2: "2 (Subcategories)"}.get(args.level, str(args.level))
+        print(f"Successfully set default estimation rollup level to: {level_label}")
+    finally:
+        db.disconnect()
+
 
 
 def main():
@@ -2159,7 +2234,20 @@ def main():
     p_stats_rec.add_argument("--month", help="Filter details by month/period (YYYY-MM)")
     p_stats_rec.set_defaults(func=cmd_stats_recurring)
 
+    # estimate-period
+    p_est = subparsers.add_parser("estimate-period", help="Estimate/project remaining spending for the current period")
+    p_est.add_argument("--days", type=int, default=30, help="Historical window in days to compute daily variable spend average")
+    p_est.add_argument("--level", type=int, choices=[0, 1, 2], help="Override default category rollup level (0: none, 1: top, 2: detailed)")
+    p_est.set_defaults(func=cmd_estimate_period)
+
+    # set-estimate-level
+    p_set_est = subparsers.add_parser("set-estimate-level", help="Set default category rollup level for spending estimation")
+    p_set_est.add_argument("level", type=int, choices=[0, 1, 2], help="Rollup level (0: no categories, 1: top categories, 2: detailed subcategories)")
+    p_set_est.set_defaults(func=cmd_set_estimate_level)
+
     args = parser.parse_args()
+
+
 
     if not args.command:
         parser.print_help()
