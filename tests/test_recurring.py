@@ -216,3 +216,32 @@ class TestAutoDiscovery:
         assert cands[0]["interval_type"] == "monthly"
         assert cands[0]["day_of_month"] == 28
         assert cands[0]["amount_min"] == -89.0
+
+    def test_discover_recurring_drifting_days(self, db, rm):
+        aid = db.add_account("checking")
+        cur = db.get_cursor()
+        cur.executemany("""
+            INSERT INTO transactions (date, description, amount, account_id)
+            VALUES (?, ?, ?, ?)
+        """, [
+            ("2025-08-01", "Autogiro drifting", -100.0, aid),
+            ("2025-09-01", "Autogiro drifting", -100.0, aid),
+            ("2025-10-01", "Autogiro drifting", -100.0, aid),
+            ("2025-11-03", "Autogiro drifting", -100.0, aid),
+            ("2025-12-01", "Autogiro drifting", -100.0, aid),
+            ("2026-01-02", "Autogiro drifting", -100.0, aid),
+            ("2026-02-02", "Autogiro drifting", -100.0, aid),
+            ("2026-03-02", "Autogiro drifting", -100.0, aid),
+            ("2026-03-30", "Autogiro drifting", -100.0, aid),
+            ("2026-04-28", "Autogiro drifting", -100.0, aid),
+            ("2026-05-28", "Autogiro drifting", -100.0, aid),
+            ("2026-06-29", "Autogiro drifting", -100.0, aid)
+        ])
+        db.commit()
+
+        cands = rm.discover_recurring_candidates(dry_run=True)
+        drifting_cand = next((c for c in cands if c["name"] == "Autogiro drifting"), None)
+        assert drifting_cand is not None
+        assert drifting_cand["interval_type"] == "days"
+        assert drifting_cand["interval_value"] in (30, 31)
+        assert drifting_cand["day_of_month"] is None

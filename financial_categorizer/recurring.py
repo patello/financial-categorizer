@@ -579,10 +579,18 @@ class RecurringManager:
             day_of_week = None
 
             if 25 <= avg_gap <= 35 and std_dev < 7:
-                interval_type = "monthly"
-                interval_value = 1
-                days = [d.day for d in dates]
-                day_of_month = max(set(days), key=days.count)
+                days_of_month = [d.day for d in dates]
+                dom_mean = sum(days_of_month) / len(days_of_month)
+                dom_var = sum((d - dom_mean) ** 2 for d in days_of_month) / len(days_of_month)
+                dom_std = dom_var ** 0.5
+                if dom_std > 5:
+                    interval_type = "days"
+                    interval_value = int(round(avg_gap))
+                    day_of_month = None
+                else:
+                    interval_type = "monthly"
+                    interval_value = 1
+                    day_of_month = max(set(days_of_month), key=days_of_month.count)
             elif 50 <= avg_gap <= 70 and std_dev < 10:
                 interval_type = "monthly"
                 interval_value = 2
