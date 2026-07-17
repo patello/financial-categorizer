@@ -195,6 +195,34 @@ class TestRecurringWorkflow:
         else:
             assert res == date(2025, 1, 7)
 
+    def test_link_transactions_amount_bounds_warning(self, db, rm):
+        aid = db.add_account("checking")
+        
+        rid = rm.add_recurring(
+            name="Netflix", pattern="Netflix", interval_type="monthly",
+            interval_value=1, start_date=date(2025, 1, 7), account_id=aid, tolerance_days=8,
+            amount_min=100.0, amount_max=200.0
+        )
+
+        cur = db.get_cursor()
+        cur.execute("""
+            INSERT INTO transactions (date, description, amount, account_id)
+            VALUES (?, ?, ?, ?)
+        """, ("2025-01-07", "Netflix subscription", 250.0, aid))
+        db.commit()
+
+        result = rm.link_transactions(dry_run=False, auto_close=False)
+        
+        assert len(result["linked"]) == 0
+        assert len(result["warnings"]) == 1
+        w = result["warnings"][0]
+        assert w["type"] == "amount_bounds"
+        assert w["id"] == rid
+        assert w["name"] == "Netflix"
+        assert w["tx_amount"] == 250.0
+        assert w["amount_min"] == 100.0
+        assert w["amount_max"] == 200.0
+
 
 class TestAutoDiscovery:
     def test_discover_recurring(self, db, rm):

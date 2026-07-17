@@ -88,7 +88,12 @@ def cmd_import(args):
             for r in rr.get("resumed", []):
                 print(f"[INFO] Transaction matching cancelled subscription '{r['name']}' detected. Automatically resumed subscription (new series ID: {r['new_id']}).")
             for w in rr.get("warnings", []):
-                print(f"[WARNING] Active recurring payment '{w['name']}' (expected around {w['expected']}) was not found in transaction history.")
+                if w.get("type") == "amount_bounds":
+                    print(f"[WARNING] Transaction '{w['tx_desc']}' on {w['tx_date']} ({w['tx_amount']:.2f} SEK) "
+                          f"matched recurring '{w['name']}' (ID: {w['id']}) but was skipped because it fell outside "
+                          f"configured amount bounds [{w['amount_min']}, {w['amount_max']}].")
+                else:
+                    print(f"[WARNING] Active recurring payment '{w['name']}' (expected around {w['expected']}) was not found in transaction history.")
             for c in rr.get("closed", []):
                 print(f"[INFO] Automatically closed missing/dead recurring payment '{c['name']}' (end date set to {c['end_date']}).")
 
@@ -460,7 +465,12 @@ def cmd_categorize(args):
             for r in rr.get("resumed", []):
                 print(f"[INFO] Transaction matching cancelled subscription '{r['name']}' detected. Automatically resumed subscription (new series ID: {r['new_id']}).")
             for w in rr.get("warnings", []):
-                print(f"[WARNING] Active recurring payment '{w['name']}' (expected around {w['expected']}) was not found in transaction history.")
+                if w.get("type") == "amount_bounds":
+                    print(f"[WARNING] Transaction '{w['tx_desc']}' on {w['tx_date']} ({w['tx_amount']:.2f} SEK) "
+                          f"matched recurring '{w['name']}' (ID: {w['id']}) but was skipped because it fell outside "
+                          f"configured amount bounds [{w['amount_min']}, {w['amount_max']}].")
+                else:
+                    print(f"[WARNING] Active recurring payment '{w['name']}' (expected around {w['expected']}) was not found in transaction history.")
             for c in rr.get("closed", []):
                 print(f"[INFO] Automatically closed missing/dead recurring payment '{c['name']}' (end date set to {c['end_date']}).")
     finally:

@@ -364,26 +364,48 @@ class RecurringManager:
 
         for tx in unlinked_txs:
             matched_config = None
+            amount_bounds_warnings = []
             for conf in configs:
                 if not _match_desc(conf["pattern"], conf["match_type"], tx["description"]):
                     continue
                 if conf["account_id"] is not None and conf["account_id"] != tx["account_id"]:
                     continue
-                if conf["amount_min"] is not None and tx["amount"] < conf["amount_min"]:
-                    continue
-                if conf["amount_max"] is not None and tx["amount"] > conf["amount_max"]:
-                    continue
 
-                if self.matches_schedule(
+                # Check schedule matches
+                schedule_matches = self.matches_schedule(
                     tx["date"], conf["start_date"], conf["end_date"],
                     conf["interval_type"], conf["interval_value"],
                     conf["day_of_month"], conf["day_of_week"], conf["week_of_month"],
                     conf["tolerance_days"]
-                ):
-                    matched_config = conf
-                    break
+                )
+
+                # Check amount min and max
+                amount_ok = True
+                if conf["amount_min"] is not None and tx["amount"] < conf["amount_min"]:
+                    amount_ok = False
+                if conf["amount_max"] is not None and tx["amount"] > conf["amount_max"]:
+                    amount_ok = False
+
+                if schedule_matches:
+                    if amount_ok:
+                        matched_config = conf
+                        break
+                    else:
+                        amount_bounds_warnings.append({
+                            "type": "amount_bounds",
+                            "id": conf["id"],
+                            "name": conf["name"],
+                            "tx_id": tx["id"],
+                            "tx_date": tx["date"].isoformat() if hasattr(tx["date"], "isoformat") else str(tx["date"]),
+                            "tx_desc": tx["description"],
+                            "tx_amount": tx["amount"],
+                            "amount_min": conf["amount_min"],
+                            "amount_max": conf["amount_max"]
+                        })
                 
                 elif conf["end_date"] is not None and tx["date"] > conf["end_date"]:
+                    if not amount_ok:
+                        continue
                     is_superseded = False
                     for other in configs:
                         if other["id"] != conf["id"] and other["name"].lower() == conf["name"].lower():
@@ -419,7 +441,7 @@ class RecurringManager:
                             "parent_id": conf["id"], "new_id": new_id, "name": conf["name"]
                         })
                         break
-
+            
             if matched_config:
                 if not dry_run:
                     cur.execute("UPDATE transactions SET recurring_id = ? WHERE id = ?", (matched_config["id"], tx["id"]))
@@ -431,6 +453,8 @@ class RecurringManager:
                     "tx_amount": tx["amount"], "recurring_id": matched_config["id"],
                     "recurring_name": matched_config["name"]
                 })
+            else:
+                results["warnings"].extend(amount_bounds_warnings)
 
         if not dry_run and results["linked"]:
             self.db.commit()
