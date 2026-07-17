@@ -1767,8 +1767,9 @@ def cmd_estimate_period(args):
             print("No transactions found in database to estimate projection.")
             return
         
-        from financial_categorizer.recurring import _to_date
-        as_of_date = _to_date(row[0])
+        from datetime import date
+        as_of_date = date.today()
+        last_tx_date = row[0]
         
         # Load estimation level preference
         level = args.level
@@ -1789,7 +1790,7 @@ def cmd_estimate_period(args):
         projected_income = var_incomes + upcoming_rec_income
         
         print(f"Period:                    {proj['period_name']} ({proj['period_start']} to {proj['period_end']})")
-        print(f"Last Imported Transaction: {proj['as_of_date']}")
+        print(f"Last Imported Transaction: {last_tx_date}")
         print(f"Days Remaining:            {proj['remaining_days']} days", end="")
         if proj['remaining_days'] > 0:
             print(f" ({proj['projection_start']} to {proj['projection_end']})")
