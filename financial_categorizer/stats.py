@@ -337,6 +337,7 @@ class Stats:
                 FROM transactions t
                 JOIN accounts a ON a.id = t.account_id
                 WHERE t.category_id IS NULL AND a.type = 'tracked'
+                  AND (t.adjusted_amount IS NULL OR t.adjusted_amount != 0)
             ),
             grouped_txns AS (
                 SELECT

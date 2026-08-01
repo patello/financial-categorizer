@@ -501,7 +501,7 @@ def cmd_transactions(args):
         txns = db.get_transactions(
             category_id=category_id,
             uncategorized_only=args.uncategorized,
-            non_zero=args.non_zero,
+            non_zero=not args.include_zero,
             account_id=account_id,
             limit=args.limit,
         )
@@ -539,7 +539,7 @@ def cmd_uncategorized(args):
 
         if args.group:
             groups = cat.get_uncategorized_grouped(
-                non_zero=args.non_zero,
+                non_zero=not args.include_zero,
                 net=args.net,
                 unsplit=args.unsplit
             )
@@ -559,7 +559,7 @@ def cmd_uncategorized(args):
         else:
             uncategorized = db.get_transactions(
                 uncategorized_only=True,
-                non_zero=args.non_zero,
+                non_zero=not args.include_zero,
                 limit=999999,
             )
             if not uncategorized:
@@ -1983,7 +1983,7 @@ def main():
     p_txns = subparsers.add_parser("transactions", help="Search and list transactions")
     p_txns.add_argument("--category", help="Filter by category name")
     p_txns.add_argument("--uncategorized", action="store_true", help="Show only uncategorized transactions")
-    p_txns.add_argument("--non-zero", action="store_true", help="Exclude transactions with adjusted_amount = 0")
+    p_txns.add_argument("--include-zero", action="store_true", help="Include transactions with adjusted_amount = 0 in the output")
     p_txns.add_argument("--account", help="Filter by account name")
     p_txns.add_argument("--limit", type=int, default=50, help="Maximum number of transactions to return (default: 50)")
     g_txns = p_txns.add_mutually_exclusive_group()
@@ -1994,7 +1994,7 @@ def main():
     # uncategorized
     p_uncat = subparsers.add_parser("uncategorized", help="Show uncategorized transactions")
     p_uncat.add_argument("--group", action="store_true", help="Group by description with counts and totals")
-    p_uncat.add_argument("--non-zero", action="store_true", help="Exclude transactions with adjusted_amount = 0")
+    p_uncat.add_argument("--include-zero", action="store_true", help="Include transactions with adjusted_amount = 0")
     g_uncat = p_uncat.add_mutually_exclusive_group()
     g_uncat.add_argument("--net", action="store_true", help="Display personal net (adjusted_amount) as primary value")
     g_uncat.add_argument("--unsplit", action="store_true", help="Display household net (unsplit_amount) as primary value")

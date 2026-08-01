@@ -327,32 +327,39 @@ def test_cli_uncategorized_non_zero(temp_db, monkeypatch, capsys):
     )
     temp_db.commit()
     
-    # 1. Test basic listing (shows both)
+    # 1. Test basic listing (hides zero-adjusted by default -> shows only non-zero)
     test_args = ["cli.py", "--db", temp_db.db_file, "uncategorized"]
-    monkeypatch.setattr(sys, "argv", test_args)
-    main()
-    captured = capsys.readouterr()
-    assert "Uncategorized transactions (2):" in captured.out
-    assert "Flat Purchase" in captured.out
-    assert "Swish Reimbursed" in captured.out
-    
-    # 2. Test --non-zero listing (shows only non-zero)
-    test_args = ["cli.py", "--db", temp_db.db_file, "uncategorized", "--non-zero"]
     monkeypatch.setattr(sys, "argv", test_args)
     main()
     captured = capsys.readouterr()
     assert "Uncategorized transactions (1):" in captured.out
     assert "Flat Purchase" in captured.out
     assert "Swish Reimbursed" not in captured.out
+    
+    # 2. Test --include-zero listing (shows both)
+    test_args = ["cli.py", "--db", temp_db.db_file, "uncategorized", "--include-zero"]
+    monkeypatch.setattr(sys, "argv", test_args)
+    main()
+    captured = capsys.readouterr()
+    assert "Uncategorized transactions (2):" in captured.out
+    assert "Flat Purchase" in captured.out
+    assert "Swish Reimbursed" in captured.out
 
-    # 3. Test grouped --non-zero listing
-    test_args = ["cli.py", "--db", temp_db.db_file, "uncategorized", "--group", "--non-zero"]
+    # 3. Test grouped listing (zero-adjusted excluded by default)
+    test_args = ["cli.py", "--db", temp_db.db_file, "uncategorized", "--group"]
     monkeypatch.setattr(sys, "argv", test_args)
     main()
     captured = capsys.readouterr()
     assert "Uncategorized by description (1 groups):" in captured.out
     assert "Flat Purchase" in captured.out
     assert "Swish Reimbursed" not in captured.out
+
+    # 4. Test grouped --include-zero listing (shows both)
+    test_args = ["cli.py", "--db", temp_db.db_file, "uncategorized", "--group", "--include-zero"]
+    monkeypatch.setattr(sys, "argv", test_args)
+    main()
+    captured = capsys.readouterr()
+    assert "Uncategorized by description (2 groups):" in captured.out
 
 
 def test_cli_rules_with_transaction_id(temp_db, monkeypatch, capsys):
