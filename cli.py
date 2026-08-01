@@ -838,7 +838,8 @@ def cmd_stats_summary(args):
         pt = resolve_period_type(db, args.period_type)
         stats = Stats(db)
         rows = stats.monthly_summary(month=args.month, period_type=pt,
-                                     unsplit=args.unsplit, gross=args.gross)
+                                     unsplit=args.unsplit, gross=args.gross,
+                                     raw_split=args.raw_split)
         if not rows:
             print("No data found.")
             return
@@ -848,6 +849,8 @@ def cmd_stats_summary(args):
             mode_label = " (gross)"
         elif args.unsplit:
             mode_label = " (unsplit)"
+        elif args.raw_split:
+            mode_label = " (raw-split)"
 
         for r in rows:
             print(f"{r['month']}{mode_label}  income={r['total_income']:>10.2f}  "
@@ -872,13 +875,15 @@ def cmd_stats_category(args):
             lookup["id"], month=args.month,
             date_from=args.from_date, date_to=args.to_date,
             period_type=pt,
-            unsplit=args.unsplit, gross=args.gross,
+            unsplit=args.unsplit, gross=args.gross, raw_split=args.raw_split,
         )
         mode_label = "total"
         if args.gross:
             mode_label = "gross_total"
         elif args.unsplit:
             mode_label = "unsplit_total"
+        elif args.raw_split:
+            mode_label = "raw_split_total"
 
         print(f"{args.name}: {mode_label}={result['total']:>10.2f}  count={result['count']}")
     finally:
@@ -901,7 +906,7 @@ def cmd_stats_trend(args):
             lookup["id"],
             date_from=args.from_date, date_to=args.to_date,
             period_type=pt,
-            unsplit=args.unsplit, gross=args.gross,
+            unsplit=args.unsplit, gross=args.gross, raw_split=args.raw_split,
         )
         if not rows:
             print("No data found.")
@@ -912,6 +917,8 @@ def cmd_stats_trend(args):
             mode_label = "gross_total"
         elif args.unsplit:
             mode_label = "unsplit_total"
+        elif args.raw_split:
+            mode_label = "raw_split_total"
 
         print(f"Trend for {args.name}:")
         for r in rows:
@@ -926,7 +933,7 @@ def cmd_stats_top(args):
         pt = resolve_period_type(db, args.period_type)
         stats = Stats(db)
         rows = stats.top_spending(month=args.month, limit=args.limit, period_type=pt,
-                                  unsplit=args.unsplit, gross=args.gross)
+                                  unsplit=args.unsplit, gross=args.gross, raw_split=args.raw_split)
         if not rows:
             print("No spending data found.")
             return
@@ -936,6 +943,8 @@ def cmd_stats_top(args):
             mode_label = " (gross)"
         elif args.unsplit:
             mode_label = " (unsplit)"
+        elif args.raw_split:
+            mode_label = " (raw-split)"
 
         print(f"Top spending{mode_label}{(' for ' + args.month) if args.month else ''}:")
         for r in rows:
@@ -952,7 +961,7 @@ def cmd_stats_transfers(args):
         pt = resolve_period_type(db, args.period_type)
         stats = Stats(db)
         rows = stats.external_transfers_summary(month=args.month, period_type=pt,
-                                                unsplit=args.unsplit, gross=args.gross)
+                                                unsplit=args.unsplit, gross=args.gross, raw_split=args.raw_split)
         if not rows:
             print("No transfers found.")
             return
@@ -962,6 +971,8 @@ def cmd_stats_transfers(args):
             mode_label = " (gross)"
         elif args.unsplit:
             mode_label = " (unsplit)"
+        elif args.raw_split:
+            mode_label = " (raw-split)"
 
         current_period = None
         for r in rows:
@@ -1297,7 +1308,7 @@ def cmd_stats_compare(args):
         resolved_pt = resolve_period_type(db, args.period_type)
         stats = Stats(db)
         result = stats.compare(period=args.month, period_type=resolved_pt,
-                               unsplit=args.unsplit, gross=args.gross)
+                               unsplit=args.unsplit, gross=args.gross, raw_split=args.raw_split)
         if not result:
             print("Not enough data for comparison.")
             return
@@ -1307,6 +1318,8 @@ def cmd_stats_compare(args):
             mode_label = " (gross)"
         elif args.unsplit:
             mode_label = " (unsplit)"
+        elif args.raw_split:
+            mode_label = " (raw-split)"
 
         if isinstance(result, list):
             # Not enough periods for comparison
@@ -1396,7 +1409,7 @@ def cmd_stats_cashflow(args):
         pt = resolve_period_type(db, args.period_type)
         stats = Stats(db)
         rows = stats.cash_flow_summary(month=args.month, period_type=pt,
-                                       unsplit=args.unsplit, gross=args.gross)
+                                       unsplit=args.unsplit, gross=args.gross, raw_split=args.raw_split)
         if not rows:
             print("No data found.")
             return
@@ -1406,6 +1419,8 @@ def cmd_stats_cashflow(args):
             mode_label = " (Gross)"
         elif args.unsplit:
             mode_label = " (Unsplit)"
+        elif args.raw_split:
+            mode_label = " (Raw-Split)"
 
         header_period = "Period" if pt == "salary" else "Month"
         header_period_label = f"{header_period}{mode_label}"
@@ -2019,6 +2034,7 @@ def main():
     g_stats_summary = p_stats_summary.add_mutually_exclusive_group()
     g_stats_summary.add_argument("--unsplit", action="store_true", help="Undo joint account split (household net)")
     g_stats_summary.add_argument("--gross", action="store_true", help="Undo split and ignore reimbursements (household raw)")
+    g_stats_summary.add_argument("--raw-split", action="store_true", help="Ownership split without reimbursement adjustments (bank-view)")
     p_stats_summary.set_defaults(func=cmd_stats_summary)
 
     # stats category
@@ -2032,6 +2048,7 @@ def main():
     g_stats_cat = p_stats_cat.add_mutually_exclusive_group()
     g_stats_cat.add_argument("--unsplit", action="store_true", help="Undo joint account split (household net)")
     g_stats_cat.add_argument("--gross", action="store_true", help="Undo split and ignore reimbursements (household raw)")
+    g_stats_cat.add_argument("--raw-split", action="store_true", help="Ownership split without reimbursement adjustments (bank-view)")
     p_stats_cat.set_defaults(func=cmd_stats_category)
 
     # stats trend
@@ -2044,6 +2061,7 @@ def main():
     g_stats_trend = p_stats_trend.add_mutually_exclusive_group()
     g_stats_trend.add_argument("--unsplit", action="store_true", help="Undo joint account split (household net)")
     g_stats_trend.add_argument("--gross", action="store_true", help="Undo split and ignore reimbursements (household raw)")
+    g_stats_trend.add_argument("--raw-split", action="store_true", help="Ownership split without reimbursement adjustments (bank-view)")
     p_stats_trend.set_defaults(func=cmd_stats_trend)
 
     # stats top
@@ -2055,6 +2073,7 @@ def main():
     g_stats_top = p_stats_top.add_mutually_exclusive_group()
     g_stats_top.add_argument("--unsplit", action="store_true", help="Undo joint account split (household net)")
     g_stats_top.add_argument("--gross", action="store_true", help="Undo split and ignore reimbursements (household raw)")
+    g_stats_top.add_argument("--raw-split", action="store_true", help="Ownership split without reimbursement adjustments (bank-view)")
     p_stats_top.set_defaults(func=cmd_stats_top)
 
     # stats-transfers
@@ -2065,6 +2084,7 @@ def main():
     g_stats_transfers = p_stats_transfers.add_mutually_exclusive_group()
     g_stats_transfers.add_argument("--unsplit", action="store_true", help="Undo joint account split (household net)")
     g_stats_transfers.add_argument("--gross", action="store_true", help="Undo split and ignore reimbursements (household raw)")
+    g_stats_transfers.add_argument("--raw-split", action="store_true", help="Ownership split without reimbursement adjustments (bank-view)")
     p_stats_transfers.set_defaults(func=cmd_stats_transfers)
 
     # recalculate
@@ -2142,6 +2162,7 @@ def main():
     g_compare = p_compare.add_mutually_exclusive_group()
     g_compare.add_argument("--unsplit", action="store_true", help="Undo joint account split (household net)")
     g_compare.add_argument("--gross", action="store_true", help="Undo split and ignore reimbursements (household raw)")
+    g_compare.add_argument("--raw-split", action="store_true", help="Ownership split without reimbursement adjustments (bank-view)")
     p_compare.set_defaults(func=cmd_stats_compare)
 
     # salary-config
@@ -2172,6 +2193,7 @@ def main():
     g_cf = p_cf.add_mutually_exclusive_group()
     g_cf.add_argument("--unsplit", action="store_true", help="Undo joint account split (household net)")
     g_cf.add_argument("--gross", action="store_true", help="Undo split and ignore reimbursements (household raw)")
+    g_cf.add_argument("--raw-split", action="store_true", help="Ownership split without reimbursement adjustments (bank-view)")
     p_cf.set_defaults(func=cmd_stats_cashflow)
 
     # recurring

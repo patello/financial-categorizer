@@ -329,3 +329,15 @@ class TestUnsplitAndGross:
         tot_gross = stats.category_total(food_id, gross=True)
         assert tot_gross["total"] == pytest.approx(-2000.0)
 
+        # 4. Raw-split total (ownership split, no reimbursement adjustments)
+        #    Shared expense -2000 on a Shared account (ownership_ratio 0.5) => -1000
+        #    The +500 reimbursement goes to the personal account (unaffected)
+        tot_raw_split = stats.category_total(food_id, raw_split=True)
+        assert tot_raw_split["total"] == pytest.approx(-1000.0)
+
+        # 5. Raw-split differs from the other three modes (it's ownership-split but
+        #    ignores reimbursement adjustments)
+        assert tot_raw_split["total"] != tot_default["total"]  # vs reimbursement-adjusted default (-750)
+        assert tot_raw_split["total"] != tot_unsplit["total"]  # vs unsplit household net (-1500)
+        assert tot_raw_split["total"] != tot_gross["total"]    # vs gross household raw (-2000)
+

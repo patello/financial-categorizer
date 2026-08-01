@@ -41,7 +41,8 @@ class Stats:
                    COALESCE(c.category_type, 'expense') AS category_type,
                    a.ownership_ratio,
                    (t.adjusted_amount / a.ownership_ratio) AS unsplit_amount,
-                   t.amount AS raw_amount
+                   t.amount AS raw_amount,
+                   (t.amount * a.ownership_ratio) AS raw_split_amount
             FROM transactions t
             JOIN accounts a ON a.id = t.account_id
             LEFT JOIN categories c ON c.id = t.category_id
@@ -59,7 +60,10 @@ class Stats:
                    ROUND(SUM(CASE WHEN category_type != 'transfer' THEN unsplit_amount ELSE 0 END), 2) AS net_unsplit,
                    ROUND(SUM(CASE WHEN raw_amount > 0 AND category_type != 'transfer' THEN raw_amount ELSE 0 END), 2) AS total_income_gross,
                    ROUND(SUM(CASE WHEN raw_amount < 0 AND category_type != 'transfer' THEN raw_amount ELSE 0 END), 2) AS total_expenses_gross,
-                   ROUND(SUM(CASE WHEN category_type != 'transfer' THEN raw_amount ELSE 0 END), 2) AS net_gross
+                   ROUND(SUM(CASE WHEN category_type != 'transfer' THEN raw_amount ELSE 0 END), 2) AS net_gross,
+                   ROUND(SUM(CASE WHEN raw_split_amount > 0 AND category_type != 'transfer' THEN raw_split_amount ELSE 0 END), 2) AS total_income_raw_split,
+                   ROUND(SUM(CASE WHEN raw_split_amount < 0 AND category_type != 'transfer' THEN raw_split_amount ELSE 0 END), 2) AS total_expenses_raw_split,
+                   ROUND(SUM(CASE WHEN category_type != 'transfer' THEN raw_split_amount ELSE 0 END), 2) AS net_raw_split
             FROM v_effective_transactions
             GROUP BY strftime('%Y-%m', date)
             ORDER BY month
@@ -74,6 +78,7 @@ class Stats:
                    ROUND(SUM(t.adjusted_amount), 2) AS total,
                    ROUND(SUM(t.adjusted_amount / a.ownership_ratio), 2) AS total_unsplit,
                    ROUND(SUM(t.amount), 2) AS total_gross,
+                   ROUND(SUM(t.amount * a.ownership_ratio), 2) AS total_raw_split,
                    COUNT(*) AS count
             FROM transactions t
             JOIN accounts a ON a.id = t.account_id
@@ -229,6 +234,7 @@ class Stats:
                     t.adjusted_amount,
                     (t.adjusted_amount / a.ownership_ratio) AS unsplit_amount,
                     t.amount AS raw_amount,
+                    (t.amount * a.ownership_ratio) AS raw_split_amount,
                     COALESCE(c.category_type, 'expense') AS category_type,
                     p.period
                 FROM transactions t
@@ -249,7 +255,10 @@ class Stats:
                 ROUND(SUM(unsplit_amount), 2) AS net_unsplit,
                 ROUND(SUM(CASE WHEN raw_amount > 0 THEN raw_amount ELSE 0 END), 2) AS total_income_gross,
                 ROUND(SUM(CASE WHEN raw_amount < 0 THEN raw_amount ELSE 0 END), 2) AS total_expenses_gross,
-                ROUND(SUM(raw_amount), 2) AS net_gross
+                ROUND(SUM(raw_amount), 2) AS net_gross,
+                ROUND(SUM(CASE WHEN raw_split_amount > 0 THEN raw_split_amount ELSE 0 END), 2) AS total_income_raw_split,
+                ROUND(SUM(CASE WHEN raw_split_amount < 0 THEN raw_split_amount ELSE 0 END), 2) AS total_expenses_raw_split,
+                ROUND(SUM(raw_split_amount), 2) AS net_raw_split
             FROM txn_with_period
             GROUP BY period
             ORDER BY period
@@ -264,6 +273,7 @@ class Stats:
                    ROUND(SUM(t.adjusted_amount), 2) AS total,
                    ROUND(SUM(t.adjusted_amount / a.ownership_ratio), 2) AS total_unsplit,
                    ROUND(SUM(t.amount), 2) AS total_gross,
+                   ROUND(SUM(t.amount * a.ownership_ratio), 2) AS total_raw_split,
                    COUNT(*) AS count
             FROM transactions t
             JOIN v_salary_periods p ON t.id = p.transaction_id
@@ -376,7 +386,7 @@ class Stats:
         self.db.commit()
 
     def monthly_summary(self, month: str = None, period_type: str = "calendar",
-                        unsplit: bool = False, gross: bool = False) -> list[dict]:
+                        unsplit: bool = False, gross: bool = False, raw_split: bool = False) -> list[dict]:
         """Get monthly income/expenses/net.
 
         Args:
@@ -384,6 +394,7 @@ class Stats:
             period_type: 'calendar' or 'salary'.
             unsplit: If True, returns unsplit (household net) values.
             gross: If True, returns gross (household raw) values.
+            raw_split: If True, returns raw-split (ownership split, no reimbursement adjustments) values.
 
         Returns list of dicts with month, total_income, total_expenses, net.
         """
@@ -395,6 +406,8 @@ class Stats:
             suffix = "_gross"
         elif unsplit:
             suffix = "_unsplit"
+        elif raw_split:
+            suffix = "_raw_split"
 
         if month:
             cur.execute(
@@ -413,7 +426,7 @@ class Stats:
         ]
 
     def cash_flow_summary(self, month: str = None, period_type: str = "default",
-                          unsplit: bool = False, gross: bool = False) -> list[dict]:
+                          unsplit: bool = False, gross: bool = False, raw_split: bool = False) -> list[dict]:
         """Get monthly cash flow summary (Operating, Transfers, Net).
 
         Args:
@@ -421,6 +434,7 @@ class Stats:
             period_type: 'default', 'calendar', or 'salary'.
             unsplit: If True, returns unsplit (household net) values.
             gross: If True, returns gross (household raw) values.
+            raw_split: If True, returns raw-split (ownership split, no reimbursement adjustments) values.
 
         Returns:
             list of dicts with:
@@ -449,6 +463,9 @@ class Stats:
         elif unsplit:
             operating_col = "(t.adjusted_amount / t.ownership_ratio)"
             transfer_col = "t.amount * COALESCE(tl.ratio, 1.0)"
+        elif raw_split:
+            operating_col = "(t.amount * t.ownership_ratio)"
+            transfer_col = "t.amount * t.ownership_ratio * COALESCE(tl.ratio, 1.0)"
         else:
             operating_col = "t.adjusted_amount"
             transfer_col = "t.amount * t.ownership_ratio * COALESCE(tl.ratio, 1.0)"
@@ -527,7 +544,7 @@ class Stats:
     def category_total(self, category_id: int, month: str = None,
                        date_from: date = None, date_to: date = None,
                        period_type: str = "calendar",
-                       unsplit: bool = False, gross: bool = False) -> dict:
+                       unsplit: bool = False, gross: bool = False, raw_split: bool = False) -> dict:
         """Get total for a category including all children.
 
         Args:
@@ -576,6 +593,8 @@ class Stats:
             amount_col = "t.raw_amount"
         elif unsplit:
             amount_col = "t.unsplit_amount"
+        elif raw_split:
+            amount_col = "t.raw_split_amount"
 
         cur = self.db.get_cursor()
         cur.execute(
@@ -592,7 +611,7 @@ class Stats:
 
     def top_spending(self, month: str = None, limit: int = 10,
                      period_type: str = "calendar",
-                     unsplit: bool = False, gross: bool = False) -> list[dict]:
+                     unsplit: bool = False, gross: bool = False, raw_split: bool = False) -> list[dict]:
         """Top spending categories.
 
         Args:
@@ -613,6 +632,8 @@ class Stats:
             total_col = "total_gross"
         elif unsplit:
             total_col = "total_unsplit"
+        elif raw_split:
+            total_col = "total_raw_split"
 
         conditions = [f"{total_col} < 0"]
         if month:
@@ -634,7 +655,7 @@ class Stats:
 
     def trend(self, category_id: int, date_from: date = None,
               date_to: date = None, period_type: str = "calendar",
-              unsplit: bool = False, gross: bool = False) -> list[dict]:
+              unsplit: bool = False, gross: bool = False, raw_split: bool = False) -> list[dict]:
         """Monthly breakdown for a category (including children).
 
         Returns list of dicts with month, total, count.
@@ -667,6 +688,8 @@ class Stats:
             total_col = "total_gross"
         elif unsplit:
             total_col = "total_unsplit"
+        elif raw_split:
+            total_col = "total_raw_split"
 
         cur = self.db.get_cursor()
         cur.execute(
@@ -681,7 +704,7 @@ class Stats:
         ]
 
     def compare(self, period: str = None, period_type: str = "calendar",
-                unsplit: bool = False, gross: bool = False) -> list[dict]:
+                unsplit: bool = False, gross: bool = False, raw_split: bool = False) -> list[dict]:
         """Month-over-month comparison.
 
         Args:
@@ -690,6 +713,7 @@ class Stats:
             period_type: 'calendar' (1st-last) or 'salary' (25th-24th).
             unsplit: If True, returns unsplit comparison.
             gross: If True, returns gross comparison.
+            raw_split: If True, returns raw-split (ownership split, no reimbursement adjustments) comparison.
 
         Returns list of dicts with period, total_income, total_expenses, net,
                 prev_ prefixed fields, and delta fields.
@@ -699,9 +723,9 @@ class Stats:
         if period_type == "salary":
             # Salary period: 25th of previous month to 24th of current month
             # Period '2026-03' means Feb 25 - Mar 24
-            rows = self._salary_period_summary(cur, unsplit=unsplit, gross=gross)
+            rows = self._salary_period_summary(cur, unsplit=unsplit, gross=gross, raw_split=raw_split)
         else:
-            rows = self._calendar_month_summary(cur, unsplit=unsplit, gross=gross)
+            rows = self._calendar_month_summary(cur, unsplit=unsplit, gross=gross, raw_split=raw_split)
 
         if len(rows) < 2 and period is None:
             # Not enough data for comparison, just return what we have
@@ -743,12 +767,14 @@ class Stats:
 
         return result
 
-    def _calendar_month_summary(self, cur, unsplit: bool = False, gross: bool = False) -> list[dict]:
+    def _calendar_month_summary(self, cur, unsplit: bool = False, gross: bool = False, raw_split: bool = False) -> list[dict]:
         suffix = ""
         if gross:
             suffix = "_gross"
         elif unsplit:
             suffix = "_unsplit"
+        elif raw_split:
+            suffix = "_raw_split"
         cur.execute(
             f"SELECT month, total_income{suffix}, total_expenses{suffix}, net{suffix} "
             f"FROM v_monthly_summary ORDER BY month"
@@ -759,7 +785,7 @@ class Stats:
             for r in cur.fetchall()
         ]
 
-    def _salary_period_summary(self, cur, unsplit: bool = False, gross: bool = False) -> list[dict]:
+    def _salary_period_summary(self, cur, unsplit: bool = False, gross: bool = False, raw_split: bool = False) -> list[dict]:
         """Aggregate by salary period (25th to 24th of next month).
         Period label is the month of the 24th, e.g. '2026-03' = Feb 25 - Mar 24.
         """
@@ -768,6 +794,8 @@ class Stats:
             suffix = "_gross"
         elif unsplit:
             suffix = "_unsplit"
+        elif raw_split:
+            suffix = "_raw_split"
         cur.execute(
             f"SELECT period, total_income{suffix}, total_expenses{suffix}, net{suffix} "
             f"FROM v_salary_period_summary ORDER BY period"
@@ -780,7 +808,7 @@ class Stats:
 
     def external_transfers_summary(
         self, month: str = None, period_type: str = "calendar",
-        unsplit: bool = False, gross: bool = False
+        unsplit: bool = False, gross: bool = False, raw_split: bool = False
     ) -> list[dict]:
         """Calculate net capital transfers to external accounts.
 
@@ -806,7 +834,7 @@ class Stats:
             join_periods = ""
 
         # Determine target net amount expression based on flags
-        if gross or unsplit:
+        if gross or unsplit or raw_split:
             amount_expr = "-1.0 * t.amount * COALESCE(tl.ratio, 1.0)"
         else:
             amount_expr = "-1.0 * t.amount * a_orig.ownership_ratio * COALESCE(tl.ratio, 1.0)"
