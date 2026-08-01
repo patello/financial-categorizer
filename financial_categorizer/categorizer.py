@@ -409,15 +409,22 @@ class Categorizer:
     #  Queries
     # ------------------------------------------------------------------ #
 
-    def get_uncategorized(self) -> list[dict]:
-        """Return all transactions without a category."""
+    def get_uncategorized(self, non_zero: bool = True) -> list[dict]:
+        """Return all transactions without a category.
+
+        By default zero-adjusted (reimbursed/neutralized) transactions are
+        excluded. Pass ``non_zero=False`` to include them.
+        """
         cur = self.db.get_cursor()
-        cur.execute(
+        sql = (
             "SELECT t.id, t.date, t.description, t.amount, a.name "
             "FROM transactions t JOIN accounts a ON t.account_id = a.id "
             "WHERE t.category_id IS NULL "
-            "ORDER BY t.date DESC"
         )
+        if non_zero:
+            sql += " AND (t.adjusted_amount IS NULL OR t.adjusted_amount != 0)"
+        sql += " ORDER BY t.date DESC"
+        cur.execute(sql)
         return [
             {
                 "id": row[0],
@@ -429,7 +436,7 @@ class Categorizer:
             for row in cur.fetchall()
         ]
 
-    def get_uncategorized_grouped(self, non_zero: bool = False,
+    def get_uncategorized_grouped(self, non_zero: bool = True,
                                   net: bool = False, unsplit: bool = False) -> list[dict]:
         """Group uncategorized transactions by description.
 
