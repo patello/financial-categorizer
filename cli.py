@@ -1642,6 +1642,12 @@ def cmd_remove_recurring(args):
     try:
         from financial_categorizer.recurring import RecurringManager
         rm = RecurringManager(db)
+        if args.hard:
+            action = "PERMANENTLY DELETE"
+        else:
+            action = "cancel (soft-close)"
+        if not confirm_action(f"This will {action} recurring payment ID {args.id}. Proceed?", yes_flag=args.yes):
+            return
         success = rm.remove_recurring(args.id, hard=args.hard, cancel_date=args.date)
         if not success:
             print(f"[ERROR] Recurring payment ID {args.id} not found.", file=sys.stderr)
@@ -1659,6 +1665,12 @@ def cmd_discover_recurring(args):
     try:
         from financial_categorizer.recurring import RecurringManager
         rm = RecurringManager(db)
+        if not args.dry_run and not confirm_action(
+            "Auto-discovery will save the discovered configurations, re-run transaction "
+            "linking, and auto-close dead recurring configurations. Proceed? (Use --dry-run to preview first)",
+            yes_flag=args.yes,
+        ):
+            return
         candidates = rm.discover_recurring_candidates(dry_run=args.dry_run)
         if not candidates:
             print("No recurring payment candidates found.")
@@ -2251,12 +2263,14 @@ def main():
     p_rem_rec.add_argument("--hard", action="store_true",
                            help="Delete configuration completely from the DB (otherwise soft-closes/cancels)")
     p_rem_rec.add_argument("--date", help="Cancellation date (YYYY-MM-DD, defaults to date of last matched transaction)")
+    p_rem_rec.add_argument("--yes", "-y", action="store_true", help="Bypass confirmation prompt")
     p_rem_rec.set_defaults(func=cmd_remove_recurring)
 
     # discover-recurring
     p_disc_rec = subparsers.add_parser("discover-recurring",
                                        help="Auto-discover candidates and auto-close dead configurations")
     p_disc_rec.add_argument("--dry-run", action="store_true", help="Preview candidates without writing them to DB")
+    p_disc_rec.add_argument("--yes", "-y", action="store_true", help="Bypass confirmation prompt (required to save and auto-link in non-interactive mode)")
     p_disc_rec.set_defaults(func=cmd_discover_recurring)
 
     # stats-recurring

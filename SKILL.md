@@ -120,6 +120,7 @@ This tool supports advanced, automated tracking and lifecycle management of recu
    Resumed subscriptions (after cancellation) are tracked as separate runs/rows in `recurring_payments`.
    * **Resumption**: If a transaction matches a pattern of a cancelled subscription (after its `end_date`), it automatically spawns a new run/configuration for the resumption.
    * **Auto-Closing**: Active configurations that are missing expected payments are automatically closed (`end_date` is set to the last matched payment date) when running `discover-recurring` or passing the `--close` flag to `import` / `categorize`.
+   * **Confirmation Gates**: `remove-recurring` and `discover-recurring` (without `--dry-run`) prompt for confirmation before making changes, like the other destructive commands. Use `--yes`/`-y` to bypass (mandatory in non-interactive mode), and `discover-recurring --dry-run` to preview first.
 3. **Flexible Date Intervals**
    Supports strict date/day checking with a configured tolerance window:
    * **Monthly**: Expected day of month (e.g. 25th, last day `-1`).
@@ -136,8 +137,8 @@ Scan transaction history to auto-identify recurring items (such as monthly subsc
 # Preview candidates without writing to the database
 python cli.py discover-recurring --dry-run
 
-# Run auto-discovery and save configurations
-python cli.py discover-recurring
+# Run auto-discovery and save configurations (prompts for confirmation; --yes to bypass)
+python cli.py discover-recurring --yes
 ```
 
 #### 2. Manually Add/Update Configurations

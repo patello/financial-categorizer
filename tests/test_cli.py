@@ -799,3 +799,45 @@ def test_cli_listing_net_and_unsplit(temp_db, monkeypatch, capsys):
 
 
 
+
+
+# --- Confirmation gates on remove-recurring / discover-recurring (security audit findings) ---
+
+def test_remove_recurring_requires_confirmation_non_interactive(temp_db, monkeypatch, capsys):
+    cur = temp_db.get_cursor()
+    cur.execute("INSERT INTO recurring_payments (id, name, pattern, match_type, interval_type, interval_value, start_date) VALUES (55, 'TestSub', 'testsub', 'contains', 'monthly', 1, '2026-01-01')")
+    temp_db.commit()
+
+    monkeypatch.setattr(sys, "argv", ["cli.py", "--db", temp_db.db_file, "remove-recurring", "55"])
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+    assert exc_info.value.code == 1
+    row = cur.execute("SELECT COUNT(*) FROM recurring_payments WHERE id=55").fetchone()
+    assert row[0] == 1  # not deleted
+
+
+def test_remove_recurring_yes_bypasses(temp_db, monkeypatch, capsys):
+    cur = temp_db.get_cursor()
+    cur.execute("INSERT INTO recurring_payments (id, name, pattern, match_type, interval_type, interval_value, start_date) VALUES (55, 'TestSub', 'testsub', 'contains', 'monthly', 1, '2026-01-01')")
+    temp_db.commit()
+
+    monkeypatch.setattr(sys, "argv", ["cli.py", "--db", temp_db.db_file, "remove-recurring", "55", "--hard", "--yes"])
+    main()
+    captured = capsys.readouterr()
+    assert "Successfully deleted" in captured.out
+    row = cur.execute("SELECT COUNT(*) FROM recurring_payments WHERE id=55").fetchone()
+    assert row[0] == 0
+
+
+def test_discover_recurring_requires_confirmation_non_interactive(temp_db, monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["cli.py", "--db", temp_db.db_file, "discover-recurring"])
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+    assert exc_info.value.code == 1
+
+
+def test_discover_recurring_dry_run_needs_no_confirmation(temp_db, monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["cli.py", "--db", temp_db.db_file, "discover-recurring", "--dry-run"])
+    main()  # should not raise
+    captured = capsys.readouterr()
+    assert "candidates found" in captured.out
