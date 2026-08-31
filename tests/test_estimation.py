@@ -199,3 +199,25 @@ def test_recurring_projection_early_and_late(db):
 
 
 
+
+
+def test_projected_spend_recurring_income_expense_separated(db):
+    """Regression: GROUP BY type used to bind to accounts.type (constant
+    'tracked'), collapsing recurring income and expense rows into a single
+    group and understating actual income (and mislabeling expenses)."""
+    cur = db.get_cursor()
+    cur.execute("INSERT INTO metadata (key, value) VALUES ('salary_period_mode', 'fixed')")
+    cur.execute("INSERT INTO metadata (key, value) VALUES ('salary_period_fixed_day', '25')")
+
+    # Recurring salary-like income AND recurring expense in the same period
+    cur.execute("INSERT INTO recurring_payments (id, name, pattern, match_type, interval_type, interval_value, start_date) VALUES (98, 'Sub', 'Sub', 'contains', 'monthly', 1, '2026-01-01')")
+    cur.execute("INSERT INTO transactions (account_id, category_id, date, description, amount, adjusted_amount, recurring_id) VALUES (1, 3, '2026-05-26', 'Salary payout', 50000.0, 50000.0, 98)")
+    cur.execute("INSERT INTO transactions (account_id, category_id, date, description, amount, adjusted_amount, recurring_id) VALUES (1, 1, '2026-05-27', 'Sub payment', -10000.0, -10000.0, 98)")
+
+    stats = Stats(db)
+    proj = stats.get_projected_spend(date(2026, 6, 10), window_days=10)
+
+    assert proj["actual_rec_income"] == 50000.0
+    assert proj["actual_rec_expense"] == -10000.0
+    assert proj["actual_total_income"] == 50000.0
+    assert proj["actual_total_expense"] == -10000.0
