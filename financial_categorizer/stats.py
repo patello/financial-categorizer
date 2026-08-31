@@ -1097,8 +1097,11 @@ class Stats:
         projection_end = next_payday - timedelta(days=1)
         
         # Period to date actual recurring (separated by type)
+        # NOTE: alias must not collide with accounts.type — "GROUP BY type"
+        # resolves to the accounts column (constant 'tracked') and collapses
+        # all rows into one group, mixing income and expenses.
         cur.execute("""
-            SELECT COALESCE(c.category_type, 'expense') AS type, SUM(t.adjusted_amount)
+            SELECT COALESCE(c.category_type, 'expense') AS cat_type, SUM(t.adjusted_amount)
             FROM transactions t
             JOIN accounts a ON a.id = t.account_id
             LEFT JOIN categories c ON c.id = t.category_id
@@ -1106,7 +1109,7 @@ class Stats:
               AND t.adjusted_amount IS NOT NULL
               AND a.type = 'tracked'
               AND t.recurring_id IS NOT NULL
-            GROUP BY type
+            GROUP BY cat_type
         """, (str(start_date), str(as_of_date)))
         rec_rows = {row[0]: row[1] for row in cur.fetchall()}
         actual_rec_expense = rec_rows.get("expense", 0.0)
@@ -1114,7 +1117,7 @@ class Stats:
 
         # Period to date actual non-recurring (separated by type)
         cur.execute("""
-            SELECT COALESCE(c.category_type, 'expense') AS type, SUM(t.adjusted_amount)
+            SELECT COALESCE(c.category_type, 'expense') AS cat_type, SUM(t.adjusted_amount)
             FROM transactions t
             JOIN accounts a ON a.id = t.account_id
             LEFT JOIN categories c ON c.id = t.category_id
@@ -1122,7 +1125,7 @@ class Stats:
               AND t.adjusted_amount IS NOT NULL
               AND a.type = 'tracked'
               AND t.recurring_id IS NULL
-            GROUP BY type
+            GROUP BY cat_type
         """, (str(start_date), str(as_of_date)))
         non_rec_rows = {row[0]: row[1] for row in cur.fetchall()}
         actual_non_rec_expense = non_rec_rows.get("expense", 0.0)
