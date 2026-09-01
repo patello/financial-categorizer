@@ -1242,14 +1242,28 @@ class Stats:
             CREATE TABLE period_projection_items (
                 payment_date TEXT,
                 name TEXT,
-                amount REAL
+                amount REAL,
+                upcoming INTEGER
             )
         """)
+        # Full-period expected occurrences: upcoming ones feed the projection,
+        # the full set (incl. already-passed) feeds dashboards' "typical" burn path.
+        from financial_categorizer.recurring import RecurringManager
+
+        expected = RecurringManager(self.db).get_expected_in_range(
+            proj["period_start"], proj["period_end"]
+        )
+        today = as_of_date
         cur.executemany(
-            "INSERT INTO period_projection_items VALUES (?,?,?)",
+            "INSERT INTO period_projection_items VALUES (?,?,?,?)",
             [
-                (str(item["date"]), item["name"], round(item["amount"], 2))
-                for item in proj["upcoming_recurring"]
+                (
+                    str(item["date"]),
+                    item["name"],
+                    round(item["amount"], 2),
+                    1 if item["date"] > today else 0,
+                )
+                for item in expected
             ],
         )
 
