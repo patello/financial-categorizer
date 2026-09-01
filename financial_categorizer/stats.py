@@ -1237,6 +1237,22 @@ class Stats:
             ),
         )
 
+        cur.execute("DROP TABLE IF EXISTS period_projection_items")
+        cur.execute("""
+            CREATE TABLE period_projection_items (
+                payment_date TEXT,
+                name TEXT,
+                amount REAL
+            )
+        """)
+        cur.executemany(
+            "INSERT INTO period_projection_items VALUES (?,?,?)",
+            [
+                (str(item["date"]), item["name"], round(item["amount"], 2))
+                for item in proj["upcoming_recurring"]
+            ],
+        )
+
         cur.execute("DROP VIEW IF EXISTS v_burn_down")
         cur.execute("""
             CREATE VIEW v_burn_down AS
