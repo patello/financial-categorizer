@@ -1240,6 +1240,7 @@ class Stats:
         cur.execute("DROP TABLE IF EXISTS period_projection_items")
         cur.execute("""
             CREATE TABLE period_projection_items (
+                config_id INTEGER,
                 payment_date TEXT,
                 name TEXT,
                 amount REAL,
@@ -1255,9 +1256,10 @@ class Stats:
         )
         today = as_of_date
         cur.executemany(
-            "INSERT INTO period_projection_items VALUES (?,?,?,?)",
+            "INSERT INTO period_projection_items VALUES (?,?,?,?,?)",
             [
                 (
+                    item["config_id"],
                     str(item["date"]),
                     item["name"],
                     round(item["amount"], 2),
@@ -1266,6 +1268,21 @@ class Stats:
                 for item in expected
             ],
         )
+        # Second pass: recurring payments already made this period whose NEXT
+        # scheduled occurrence falls after the period end (e.g. loans on the
+        # 27th) are missed by forward projection. Add the actual in-period
+        # payment so dashboards can show the typical full-period pattern.
+        cur.execute("""
+            INSERT INTO period_projection_items
+            SELECT t.recurring_id, t.date, r.name, ROUND(t.adjusted_amount, 2), 0
+            FROM transactions t
+            JOIN recurring_payments r ON r.id = t.recurring_id
+            WHERE t.date >= ? AND t.date <= ?
+              AND r.end_date IS NULL
+              AND t.adjusted_amount != 0
+              AND t.recurring_id NOT IN (SELECT config_id FROM period_projection_items)
+            ORDER BY t.date
+        """, (str(proj["period_start"]), str(proj["period_end"])))
 
         cur.execute("DROP VIEW IF EXISTS v_burn_down")
         cur.execute("""
