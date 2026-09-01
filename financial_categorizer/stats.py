@@ -1188,3 +1188,82 @@ class Stats:
 
 
 
+
+    def refresh_period_projection(self, as_of_date=None):
+        """Recompute the period projection table and v_burn_down view.
+
+        Called after data mutations (import, categorize, manual-match,
+        link/unlink) so dashboards consume a projection identical to the
+        estimate-period CLI logic. Replaces the table wholesale: the latest
+        refresh wins.
+        """
+        if as_of_date is None:
+            as_of_date = date.today()
+
+        proj = self.get_projected_spend(as_of_date, window_days=30, level=0)
+        upcoming_expense = sum(
+            -item["amount"] for item in proj["upcoming_recurring"] if item["amount"] < 0
+        )
+
+        cur = self.db.get_cursor()
+        cur.execute("DROP TABLE IF EXISTS period_projection")
+        cur.execute("""
+            CREATE TABLE period_projection (
+                as_of_date TEXT,
+                period_name TEXT,
+                period_start TEXT,
+                period_end TEXT,
+                total_estimated REAL,
+                projected_variable_total REAL,
+                upcoming_recurring_total REAL,
+                upcoming_recurring_expense REAL,
+                actual_total_expense REAL,
+                remaining_days INTEGER
+            )
+        """)
+        cur.execute(
+            "INSERT INTO period_projection VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                str(proj["as_of_date"]),
+                proj["period_name"],
+                str(proj["period_start"]),
+                str(proj["period_end"]),
+                round(proj["total_estimated"], 2),
+                round(proj["projected_variable_total"], 2),
+                round(proj["upcoming_recurring_total"], 2),
+                round(upcoming_expense, 2),
+                round(proj["actual_total_expense"], 2),
+                proj["remaining_days"],
+            ),
+        )
+
+        cur.execute("DROP VIEW IF EXISTS v_burn_down")
+        cur.execute("""
+            CREATE VIEW v_burn_down AS
+            WITH p AS (SELECT * FROM period_projection LIMIT 1),
+            days(d) AS (
+                WITH RECURSIVE seq(i) AS (
+                    SELECT 0 UNION ALL SELECT i + 1 FROM seq
+                    WHERE i < (SELECT CAST(julianday('now') - julianday((SELECT period_start FROM p)) AS INT))
+                )
+                SELECT date((SELECT period_start FROM p), printf('+%d days', i)) FROM seq
+            )
+            SELECT
+                d,
+                ROUND((SELECT -actual_total_expense - projected_variable_total + upcoming_recurring_expense FROM p), 2) AS budget,
+                ROUND(
+                    (SELECT -actual_total_expense - projected_variable_total + upcoming_recurring_expense FROM p)
+                    - COALESCE((
+                        SELECT SUM(-t.adjusted_amount)
+                        FROM transactions t
+                        JOIN accounts a ON a.id = t.account_id
+                        LEFT JOIN categories c ON c.id = t.category_id
+                        WHERE t.date >= (SELECT period_start FROM p)
+                          AND t.date <= d
+                          AND t.adjusted_amount < 0
+                          AND a.type = 'tracked'
+                          AND COALESCE(c.category_type, 'expense') != 'transfer'
+                    ), 0), 2) AS remaining
+            FROM days
+        """)
+        self.db.commit()
