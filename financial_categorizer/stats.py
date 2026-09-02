@@ -1204,6 +1204,9 @@ class Stats:
         upcoming_expense = sum(
             -item["amount"] for item in proj["upcoming_recurring"] if item["amount"] < 0
         )
+        upcoming_income = sum(
+            item["amount"] for item in proj["upcoming_recurring"] if item["amount"] > 0
+        )
 
         cur = self.db.get_cursor()
         cur.execute("DROP TABLE IF EXISTS period_projection")
@@ -1218,11 +1221,13 @@ class Stats:
                 upcoming_recurring_total REAL,
                 upcoming_recurring_expense REAL,
                 actual_total_expense REAL,
+                actual_total_income REAL,
+                upcoming_recurring_income REAL,
                 remaining_days INTEGER
             )
         """)
         cur.execute(
-            "INSERT INTO period_projection VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO period_projection VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 str(proj["as_of_date"]),
                 proj["period_name"],
@@ -1233,6 +1238,8 @@ class Stats:
                 round(proj["upcoming_recurring_total"], 2),
                 round(upcoming_expense, 2),
                 round(proj["actual_total_expense"], 2),
+                round(proj["actual_total_income"], 2),
+                round(upcoming_income, 2),
                 proj["remaining_days"],
             ),
         )
@@ -1287,7 +1294,16 @@ class Stats:
         cur.execute("DROP VIEW IF EXISTS v_burn_down")
         cur.execute("""
             CREATE VIEW v_burn_down AS
+            -- Income-anchored, mirrors get_projected_spend(): day 0 starts at
+            -- actual income + upcoming income items; remaining_net tracks the
+            -- net position (anchor minus cumulative expenses). All scalar
+            -- inputs come from period_projection (written by the Python
+            -- projection logic) so no projection math is duplicated here.
             WITH p AS (SELECT * FROM period_projection LIMIT 1),
+            anchor AS (
+                SELECT actual_total_income + upcoming_recurring_income AS income_anchor
+                FROM p
+            ),
             days(d) AS (
                 WITH RECURSIVE seq(i) AS (
                     SELECT 0 UNION ALL SELECT i + 1 FROM seq
@@ -1297,9 +1313,9 @@ class Stats:
             )
             SELECT
                 d,
-                ROUND((SELECT -actual_total_expense - projected_variable_total + upcoming_recurring_expense FROM p), 2) AS budget,
+                ROUND((SELECT income_anchor FROM anchor), 2) AS income_anchor,
                 ROUND(
-                    (SELECT -actual_total_expense - projected_variable_total + upcoming_recurring_expense FROM p)
+                    (SELECT income_anchor FROM anchor)
                     - COALESCE((
                         SELECT SUM(-t.adjusted_amount)
                         FROM transactions t
@@ -1310,7 +1326,7 @@ class Stats:
                           AND t.adjusted_amount < 0
                           AND a.type = 'tracked'
                           AND COALESCE(c.category_type, 'expense') != 'transfer'
-                    ), 0), 2) AS remaining
+                    ), 0), 2) AS remaining_net
             FROM days
         """)
         self.db.commit()
