@@ -1151,7 +1151,14 @@ class Stats:
         upcoming_recurring_total = 0.0
         if remaining_days > 0:
             rm = RecurringManager(self.db)
-            upcoming_recurring = rm.get_expected_in_range(projection_start, projection_end, period_start=start_date)
+            expected_all = rm.get_expected_in_range(
+                projection_start, projection_end,
+                period_start=start_date, as_of_date=as_of_date,
+            )
+            # Only future-dated occurrences count as upcoming: period-anchored
+            # expectations already drifted past as_of are either paid (actuals
+            # include them) or stale anchors -- counting them double-counts.
+            upcoming_recurring = [item for item in expected_all if item["upcoming"]]
 
             upcoming_recurring_total = sum(item["amount"] for item in upcoming_recurring)
             
@@ -1251,7 +1258,8 @@ class Stats:
                 payment_date TEXT,
                 name TEXT,
                 amount REAL,
-                upcoming INTEGER
+                upcoming INTEGER,
+                source TEXT
             )
         """)
         # Full-period expected occurrences: upcoming ones feed the projection,
@@ -1259,11 +1267,11 @@ class Stats:
         from financial_categorizer.recurring import RecurringManager
 
         expected = RecurringManager(self.db).get_expected_in_range(
-            proj["period_start"], proj["period_end"]
+            proj["period_start"], proj["period_end"], as_of_date=as_of_date
         )
         today = as_of_date
         cur.executemany(
-            "INSERT INTO period_projection_items VALUES (?,?,?,?,?)",
+            "INSERT INTO period_projection_items VALUES (?,?,?,?,?,?)",
             [
                 (
                     item["config_id"],
@@ -1271,6 +1279,7 @@ class Stats:
                     item["name"],
                     round(item["amount"], 2),
                     1 if item["date"] > today else 0,
+                    "expected",
                 )
                 for item in expected
             ],
@@ -1281,14 +1290,31 @@ class Stats:
         # payment so dashboards can show the typical full-period pattern.
         cur.execute("""
             INSERT INTO period_projection_items
-            SELECT t.recurring_id, t.date, r.name, ROUND(t.adjusted_amount, 2), 0
+            SELECT t.recurring_id, t.date, r.name, ROUND(t.adjusted_amount, 2), 0, 'actual'
             FROM transactions t
             JOIN recurring_payments r ON r.id = t.recurring_id
             WHERE t.date >= ? AND t.date <= ?
               AND r.end_date IS NULL
               AND t.adjusted_amount != 0
-              AND t.recurring_id NOT IN (SELECT config_id FROM period_projection_items)
+              AND t.recurring_id NOT IN (
+                  SELECT config_id FROM period_projection_items
+                  WHERE upcoming = 1 AND source = 'expected'
+              )
             ORDER BY t.date
+        """, (str(proj["period_start"]), str(proj["period_end"])))
+        # Stale dedupe: an expected occurrence dated before as_of for a
+        # template that WAS paid in-period duplicates the actual row above
+        # (drift makes the projected date lag the real payment). Drop the
+        # stale expected row, keep the actual one.
+        cur.execute("""
+            DELETE FROM period_projection_items
+            WHERE source = 'expected' AND upcoming = 0
+              AND config_id IN (
+                  SELECT DISTINCT t.recurring_id FROM transactions t
+                  WHERE t.recurring_id IS NOT NULL
+                    AND t.date >= ? AND t.date <= ?
+                    AND t.adjusted_amount != 0
+              )
         """, (str(proj["period_start"]), str(proj["period_end"])))
 
         cur.execute("DROP VIEW IF EXISTS v_burn_down")

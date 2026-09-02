@@ -221,3 +221,83 @@ def test_projected_spend_recurring_income_expense_separated(db):
     assert proj["actual_rec_expense"] == -10000.0
     assert proj["actual_total_income"] == 50000.0
     assert proj["actual_total_expense"] == -10000.0
+
+def test_expected_in_range_upcoming_flag_and_stale_dates(db):
+    """Drifted anchors project past-dated occurrences; the upcoming flag must
+    mark them so period-anchored consumers can exclude already-passed dates."""
+    cur = db.get_cursor()
+    cur.execute("INSERT INTO metadata (key, value) VALUES ('salary_period_mode', 'salary')")
+    cur.execute("INSERT INTO transactions (id, account_id, category_id, date, description, amount, adjusted_amount) VALUES (1, 1, 3, '2026-05-25', 'Salary payout', 50000.0, 25000.0)")
+    cur.execute("INSERT INTO transactions (id, account_id, category_id, date, description, amount, adjusted_amount) VALUES (2, 1, 3, '2026-06-25', 'Salary payout', 50000.0, 25000.0)")
+    # Days-interval template with a stale anchor: last payment Jul 3, 30-day
+    # interval -> next expected Aug 2, which is BEFORE as_of (Aug 21 period start)
+    cur.execute("""
+        INSERT INTO recurring_payments (id, name, pattern, match_type, interval_type, interval_value, start_date, account_id, category_id)
+        VALUES (1, 'DigitalOcean', 'digitalocean', 'contains', 'days', 30, '2026-01-01', 1, 1)
+    """)
+    cur.execute("INSERT INTO transactions (account_id, category_id, date, description, amount, adjusted_amount, recurring_id) VALUES (1, 1, '2026-08-02', 'DigitalOcean', -320.0, -160.0, 1)")
+
+    rm = RecurringManager(db)
+    as_of = date(2026, 8, 21)
+    # Full period window (period-anchored): includes the stale Aug 22? no --
+    # anchor Aug 2 + 30d = Sep 1, inside window; next would be Oct 1 (outside)
+    expected = rm.get_expected_in_range(date(2026, 8, 21), date(2026, 9, 21), as_of_date=as_of)
+    assert len(expected) == 1
+    item = expected[0]
+    assert item["date"] == date(2026, 9, 1)
+    assert item["upcoming"] is True
+
+    # Stale case: anchor even older so projected date lands before as_of
+    cur.execute("UPDATE transactions SET date = '2026-07-20' WHERE recurring_id = 1")
+    expected = rm.get_expected_in_range(date(2026, 8, 21), date(2026, 9, 21), as_of_date=as_of)
+    # Jul 20 + 30d = Aug 19 (before as_of, excluded by start), +30d = Sep 18 (in window, upcoming)
+    assert [(e["date"], e["upcoming"]) for e in expected] == [(date(2026, 9, 18), True)]
+
+def test_projected_spend_excludes_past_expected_occurrences(db):
+    """upcoming_recurring must only contain future-dated occurrences: a drifted
+    past-dated expectation double-counts against the actual transaction."""
+    cur = db.get_cursor()
+    cur.execute("INSERT INTO metadata (key, value) VALUES ('salary_period_mode', 'salary')")
+    cur.execute("INSERT INTO transactions (id, account_id, category_id, date, description, amount, adjusted_amount) VALUES (1, 1, 3, '2026-05-25', 'Salary payout', 50000.0, 25000.0)")
+    cur.execute("INSERT INTO transactions (id, account_id, category_id, date, description, amount, adjusted_amount) VALUES (2, 1, 3, '2026-06-25', 'Salary payout', 50000.0, 25000.0)")
+    # Ellevio paid Aug 28 (in period, as actual) but NOT matched to template
+    # (drift/unmatched) -- template anchor is older, projects Aug 29.
+    cur.execute("""
+        INSERT INTO recurring_payments (id, name, pattern, match_type, interval_type, interval_value, start_date, account_id, category_id)
+        VALUES (1, 'Ellevio', 'ellevio', 'contains', 'days', 30, '2026-01-01', 1, 1)
+    """)
+    cur.execute("INSERT INTO transactions (account_id, category_id, date, description, amount, adjusted_amount, recurring_id) VALUES (1, 1, '2026-07-30', 'Ellevio', -262.0, -131.0, 1)")
+    # In-period actual, unmatched (no recurring_id)
+    cur.execute("INSERT INTO transactions (account_id, category_id, date, description, amount, adjusted_amount) VALUES (1, 1, '2026-08-28', 'Ellevio', -262.0, -131.0)")
+
+    stats = Stats(db)
+    proj = stats.get_projected_spend(date(2026, 8, 30), window_days=10)
+    # Expected Sep 29 falls outside period (Sep 25): nothing upcoming; crucially
+    # the drifted past occurrence (Aug 29) must NOT appear as upcoming either.
+    for item in proj["upcoming_recurring"]:
+        assert item["date"] > date(2026, 8, 30), f"past-dated expected item leaked: {item}"
+
+def test_items_table_dedupes_stale_expected_rows(db):
+    """refresh_period_projection: a paid-in-period template with a stale past
+    expected row keeps the actual row and drops the stale expected row."""
+    cur = db.get_cursor()
+    cur.execute("INSERT INTO metadata (key, value) VALUES ('salary_period_mode', 'salary')")
+    cur.execute("INSERT INTO transactions (id, account_id, category_id, date, description, amount, adjusted_amount) VALUES (1, 1, 3, '2026-05-25', 'Salary payout', 50000.0, 25000.0)")
+    cur.execute("INSERT INTO transactions (id, account_id, category_id, date, description, amount, adjusted_amount) VALUES (2, 1, 3, '2026-06-25', 'Salary payout', 50000.0, 25000.0)")
+    cur.execute("INSERT INTO transactions (id, account_id, category_id, date, description, amount, adjusted_amount) VALUES (3, 1, 3, '2026-07-25', 'Salary payout', 50000.0, 25000.0)")
+    cur.execute("INSERT INTO transactions (id, account_id, category_id, date, description, amount, adjusted_amount) VALUES (4, 1, 3, '2026-08-25', 'Salary payout', 50000.0, 25000.0)")
+    cur.execute("""
+        INSERT INTO recurring_payments (id, name, pattern, match_type, interval_type, interval_value, start_date, account_id, category_id)
+        VALUES (1, 'Ellevio', 'ellevio', 'contains', 'days', 30, '2026-01-01', 1, 1)
+    """)
+    # Anchor Jul 30 -> expected Aug 29 (past); actual matched payment Aug 28 in period
+    cur.execute("INSERT INTO transactions (account_id, category_id, date, description, amount, adjusted_amount, recurring_id) VALUES (1, 1, '2026-07-30', 'Ellevio', -262.0, -131.0, 1)")
+    cur.execute("INSERT INTO transactions (account_id, category_id, date, description, amount, adjusted_amount, recurring_id) VALUES (1, 1, '2026-08-28', 'Ellevio v2', -262.0, -131.0, 1)")
+
+    stats = Stats(db)
+    stats.refresh_period_projection(as_of_date=date(2026, 8, 30))
+    cur = db.get_cursor()
+    rows = cur.execute("SELECT payment_date, source, upcoming FROM period_projection_items WHERE config_id = 1").fetchall()
+    # The stale expected row (2026-08-29) must be gone; the actual row remains.
+    assert ("2026-08-29", "expected", 0) not in rows
+    assert ("2026-08-28", "actual", 0) in rows
