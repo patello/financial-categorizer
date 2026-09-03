@@ -57,11 +57,16 @@ All data lives in a single SQLite database (`data/finance.db` by default).
 - **match_rules** — patterns for auto-categorization
 - **transaction_links** — connects transfers and reimbursements
 
+### Projection tables
+- **period_projection** — persisted projection of the current period (income-anchored burn-down), refreshed automatically after data mutations (import, categorize, manual match/unmatch, link/unlink); the latest refresh wins
+- **period_projection_items** — itemized expected occurrences (date, name, amount) covering the full period, with an `upcoming` flag (date > as-of); zero-amount rows filtered
+
 ### Views
 - `v_effective_transactions` — all transactions with adjusted, unsplit, and raw amounts
 - `v_monthly_summary` — income, expenses, net per month (includes unsplit and gross aggregations)
 - `v_category_monthly` — category totals per month (includes unsplit and gross aggregations)
 - `v_daily_spending` — daily spending breakdown
+- `v_burn_down` — income-anchored burn-down derived from `period_projection`
 
 ### Adjusted, Unsplit, and Gross amounts
 

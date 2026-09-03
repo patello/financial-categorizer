@@ -1151,7 +1151,14 @@ class Stats:
         upcoming_recurring_total = 0.0
         if remaining_days > 0:
             rm = RecurringManager(self.db)
-            upcoming_recurring = rm.get_expected_in_range(projection_start, projection_end, period_start=start_date)
+            expected_all = rm.get_expected_in_range(
+                projection_start, projection_end,
+                period_start=start_date, as_of_date=as_of_date,
+            )
+            # Only future-dated occurrences count as upcoming: period-anchored
+            # expectations already drifted past as_of are either paid (actuals
+            # include them) or stale anchors -- counting them double-counts.
+            upcoming_recurring = [item for item in expected_all if item["upcoming"]]
 
             upcoming_recurring_total = sum(item["amount"] for item in upcoming_recurring)
             
@@ -1188,3 +1195,164 @@ class Stats:
 
 
 
+
+    def refresh_period_projection(self, as_of_date=None):
+        """Recompute the period projection table and v_burn_down view.
+
+        Called after data mutations (import, categorize, manual-match,
+        link/unlink) so dashboards consume a projection identical to the
+        estimate-period CLI logic. Replaces the table wholesale: the latest
+        refresh wins.
+        """
+        if as_of_date is None:
+            as_of_date = date.today()
+
+        proj = self.get_projected_spend(as_of_date, window_days=30, level=0)
+        upcoming_expense = sum(
+            -item["amount"] for item in proj["upcoming_recurring"] if item["amount"] < 0
+        )
+        upcoming_income = sum(
+            item["amount"] for item in proj["upcoming_recurring"] if item["amount"] > 0
+        )
+
+        cur = self.db.get_cursor()
+        cur.execute("DROP TABLE IF EXISTS period_projection")
+        cur.execute("""
+            CREATE TABLE period_projection (
+                as_of_date TEXT,
+                period_name TEXT,
+                period_start TEXT,
+                period_end TEXT,
+                total_estimated REAL,
+                projected_variable_total REAL,
+                upcoming_recurring_total REAL,
+                upcoming_recurring_expense REAL,
+                actual_total_expense REAL,
+                actual_total_income REAL,
+                upcoming_recurring_income REAL,
+                remaining_days INTEGER
+            )
+        """)
+        cur.execute(
+            "INSERT INTO period_projection VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                str(proj["as_of_date"]),
+                proj["period_name"],
+                str(proj["period_start"]),
+                str(proj["period_end"]),
+                round(proj["total_estimated"], 2),
+                round(proj["projected_variable_total"], 2),
+                round(proj["upcoming_recurring_total"], 2),
+                round(upcoming_expense, 2),
+                round(proj["actual_total_expense"], 2),
+                round(proj["actual_total_income"], 2),
+                round(upcoming_income, 2),
+                proj["remaining_days"],
+            ),
+        )
+
+        cur.execute("DROP TABLE IF EXISTS period_projection_items")
+        cur.execute("""
+            CREATE TABLE period_projection_items (
+                config_id INTEGER,
+                payment_date TEXT,
+                name TEXT,
+                amount REAL,
+                upcoming INTEGER,
+                source TEXT
+            )
+        """)
+        # Full-period expected occurrences: upcoming ones feed the projection,
+        # the full set (incl. already-passed) feeds dashboards' "typical" burn path.
+        from financial_categorizer.recurring import RecurringManager
+
+        expected = RecurringManager(self.db).get_expected_in_range(
+            proj["period_start"], proj["period_end"], as_of_date=as_of_date
+        )
+        today = as_of_date
+        cur.executemany(
+            "INSERT INTO period_projection_items VALUES (?,?,?,?,?,?)",
+            [
+                (
+                    item["config_id"],
+                    str(item["date"]),
+                    item["name"],
+                    round(item["amount"], 2),
+                    1 if item["date"] > today else 0,
+                    "expected",
+                )
+                for item in expected
+            ],
+        )
+        # Second pass: recurring payments already made this period whose NEXT
+        # scheduled occurrence falls after the period end (e.g. loans on the
+        # 27th) are missed by forward projection. Add the actual in-period
+        # payment so dashboards can show the typical full-period pattern.
+        cur.execute("""
+            INSERT INTO period_projection_items
+            SELECT t.recurring_id, t.date, r.name, ROUND(t.adjusted_amount, 2), 0, 'actual'
+            FROM transactions t
+            JOIN recurring_payments r ON r.id = t.recurring_id
+            WHERE t.date >= ? AND t.date <= ?
+              AND r.end_date IS NULL
+              AND t.adjusted_amount != 0
+              AND t.recurring_id NOT IN (
+                  SELECT config_id FROM period_projection_items
+                  WHERE upcoming = 1 AND source = 'expected'
+              )
+            ORDER BY t.date
+        """, (str(proj["period_start"]), str(proj["period_end"])))
+        # Stale dedupe: an expected occurrence dated before as_of for a
+        # template that WAS paid in-period duplicates the actual row above
+        # (drift makes the projected date lag the real payment). Drop the
+        # stale expected row, keep the actual one.
+        cur.execute("""
+            DELETE FROM period_projection_items
+            WHERE source = 'expected' AND upcoming = 0
+              AND config_id IN (
+                  SELECT DISTINCT t.recurring_id FROM transactions t
+                  WHERE t.recurring_id IS NOT NULL
+                    AND t.date >= ? AND t.date <= ?
+                    AND t.adjusted_amount != 0
+              )
+        """, (str(proj["period_start"]), str(proj["period_end"])))
+
+        cur.execute("DROP VIEW IF EXISTS v_burn_down")
+        cur.execute("""
+            CREATE VIEW v_burn_down AS
+            -- Income-anchored, mirrors get_projected_spend(): day 0 starts at
+            -- actual income + upcoming income items; remaining_net tracks the
+            -- net position (anchor minus cumulative expenses). All scalar
+            -- inputs come from period_projection (written by the Python
+            -- projection logic) so no projection math is duplicated here.
+            WITH p AS (SELECT * FROM period_projection LIMIT 1),
+            anchor AS (
+                SELECT actual_total_income + upcoming_recurring_income AS income_anchor
+                FROM p
+            ),
+            days(d) AS (
+                WITH RECURSIVE seq(i) AS (
+                    SELECT 0 UNION ALL SELECT i + 1 FROM seq
+                    WHERE i < (SELECT CAST(julianday('now') - julianday((SELECT period_start FROM p)) AS INT))
+                )
+                SELECT date((SELECT period_start FROM p), printf('+%d days', i)) FROM seq
+            )
+            SELECT
+                d,
+                ROUND((SELECT income_anchor FROM anchor), 2) AS income_anchor,
+                ROUND(
+                    (SELECT income_anchor FROM anchor)
+                    - COALESCE((
+                        SELECT SUM(-t.adjusted_amount)
+                        FROM transactions t
+                        JOIN accounts a ON a.id = t.account_id
+                        LEFT JOIN categories c ON c.id = t.category_id
+                        WHERE t.date >= (SELECT period_start FROM p)
+                          AND t.date <= d
+                          AND t.adjusted_amount < 0
+                          AND a.type = 'tracked'
+                          AND COALESCE(c.category_type, 'expense') != 'transfer'
+                    ), 0), 2) AS remaining_net
+            FROM days
+        """)
+        self.db.commit()

@@ -832,11 +832,18 @@ class RecurringManager:
             "total_monthly_outflow": total_monthly_outflow
         }
 
-    def get_expected_in_range(self, start_date: date, end_date: date, period_start: date = None) -> list[dict]:
+    def get_expected_in_range(self, start_date: date, end_date: date, period_start: date = None, as_of_date: date = None) -> list[dict]:
         """Generate expected payment occurrences and estimated adjusted amounts for active templates
         within the date range [start_date, end_date] (inclusive).
+
+        Each occurrence carries an ``upcoming`` flag (date > as_of_date,
+        default today). Callers wanting "still owed" must filter on it:
+        real-world interval drift pushes projected dates into the past, where
+        they are either already paid (actuals cover them) or stale anchors.
         """
         cur = self.db.get_cursor()
+        if as_of_date is None:
+            as_of_date = date.today()
 
         
         # Select active recurring templates
@@ -938,7 +945,8 @@ class RecurringManager:
                         "name": conf["name"],
                         "date": curr_dt,
                         "amount": est_adjusted_amount,
-                        "category_name": conf["category_name"] or "None"
+                        "category_name": conf["category_name"] or "None",
+                        "upcoming": curr_dt > as_of_date
                     })
 
                     

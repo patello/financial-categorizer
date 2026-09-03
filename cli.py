@@ -49,6 +49,17 @@ def confirm_action(prompt_message: str, yes_flag: bool = False) -> bool:
         sys.exit(1)
 
 
+def _refresh_projection(db):
+    """Refresh period_projection + v_burn_down after data mutations.
+
+    Best-effort: projection staleness must never fail the mutation command.
+    """
+    try:
+        Stats(db).refresh_period_projection()
+    except Exception as exc:
+        logging.getLogger(__name__).warning("period projection refresh failed: %s", exc)
+
+
 def cmd_import(args):
     old_level = logging.getLogger().getEffectiveLevel()
     if args.quiet:
@@ -147,6 +158,7 @@ def cmd_import(args):
             # 4. Print total summary counts (compact, default, and verbose modes)
             print(f"Total: {total['imported']} imported, {total['skipped']} skipped, "
                   f"{total['errors']} errors")
+        _refresh_projection(db)
     finally:
         db.disconnect()
         logging.getLogger().setLevel(old_level)
@@ -473,6 +485,7 @@ def cmd_categorize(args):
                     print(f"[WARNING] Active recurring payment '{w['name']}' (expected around {w['expected']}) was not found in transaction history.")
             for c in rr.get("closed", []):
                 print(f"[INFO] Automatically closed missing/dead recurring payment '{c['name']}' (end date set to {c['end_date']}).")
+        _refresh_projection(db)
     finally:
         db.disconnect()
 
@@ -704,6 +717,7 @@ def cmd_manual_match(args):
         cur.execute("SELECT name FROM categories WHERE id = ?", (cat_id,))
         cat_name = cur.fetchone()[0]
         print(f"Manually matched transaction [{txn_id}] '{txn_desc}' -> category [{cat_id}] '{cat_name}'")
+        _refresh_projection(db)
     finally:
         db.disconnect()
 
@@ -723,6 +737,7 @@ def cmd_manual_unmatch(args):
         else:
             print(f"Error: Transaction [{txn_id}] does not have a manual categorization override.", file=sys.stderr)
             sys.exit(1)
+        _refresh_projection(db)
     finally:
         db.disconnect()
 
@@ -1123,6 +1138,7 @@ def cmd_link(args):
                 to_account_id=to_account_id,
             )
             print(f"Created link {link_id} ({args.type})")
+            _refresh_projection(db)
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
@@ -1175,6 +1191,7 @@ def cmd_unlink(args):
             print(f"Removed link {args.id}")
         else:
             print(f"Link {args.id} not found")
+        _refresh_projection(db)
     finally:
         db.disconnect()
 
