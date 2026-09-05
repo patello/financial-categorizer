@@ -9,6 +9,7 @@ from datetime import date, timedelta
 
 from financial_categorizer.db_handler import DatabaseHandler
 from financial_categorizer.importer import CSVImporter
+from financial_categorizer.matching import inexact_amount_match
 
 
 NORDEA_HEADER = (
@@ -120,6 +121,33 @@ class TestInexactSettlementImport:
         assert _count(db, "pending") == 1
         assert _count(db, "settled") == 1
 
+    def test_inexact_deep_discount_not_matched(self, importer, db):
+        """A settled charge >15% below the reservation could be a genuinely
+        separate purchase: no auto-match, manual review instead."""
+        today = date.today().isoformat()
+        _import(importer, [
+            "Reserverat;-1000,00;1111 11 11111;;;Reservation Kortköp MAXI ICA STORMA;999,99;SEK",
+        ])
+        result = _import(importer, [
+            f"{today};-780,00;1111 11 11111;;;Kortköp 260904 MAXI ICA STORMA;999,99;SEK",
+        ])
+        assert result["settled_pending"] == 0
+        assert _count(db, "pending") == 1
+        assert _count(db, "settled") == 1
+
+
+class TestInexactBand:
+    def test_band_bounds(self):
+        """Floor and ceiling are inclusive; sign must match."""
+        assert not inexact_amount_match(-1000.00, -849.99)  # just below floor
+        assert inexact_amount_match(-1000.00, -850.00)      # floor inclusive
+        assert inexact_amount_match(-1000.00, -1050.00)     # ceiling inclusive
+        assert not inexact_amount_match(-1000.00, -1050.01)  # just above ceiling
+        assert not inexact_amount_match(-1000.00, 500.00)   # sign mismatch
+        assert inexact_amount_match(1000.00, 940.00)        # inflow side
+
+
+class TestInexactAmbiguityImport:
     def test_inexact_ambiguous_not_matched(self, importer, db):
         """Two reservations both inside the band of one settled charge: no guess."""
         today = date.today().isoformat()
