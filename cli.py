@@ -117,6 +117,15 @@ def cmd_import(args):
             for f in result["details"]["failures"]:
                 print(f"[ERROR] Row in {name}: {f['row']} (Reason: {f['reason']})", file=sys.stderr)
 
+        # Print pending lifecycle warnings (reservations that disappeared
+        # from the export without a settled counterpart)
+        for name, result in all_file_results:
+            for w in result.get("warnings", []):
+                print(
+                    f"[WARNING] {name}: pending [{w['id']}] {w['date']} "
+                    f"{w['amount']:.2f} {w['description']}: {w['reason']}"
+                )
+
         if not args.quiet:
             if not args.compact:
                 # 1. Print skips (only in verbose mode)
@@ -1043,7 +1052,12 @@ def cmd_cleanup(args):
 def cmd_cleanup_pending(args):
     db = get_db(args.db)
     try:
-        report = db.cleanup_pending(dry_run=True)
+        force_ids = getattr(args, "force_id", None)
+        try:
+            report = db.cleanup_pending(dry_run=True, force_ids=force_ids)
+        except ValueError as e:
+            print(f"Error: {e}")
+            return
         ghosts = report["ghosts"]
         unresolved = report["unresolved"]
 
@@ -1055,12 +1069,18 @@ def cmd_cleanup_pending(args):
             )
             print(f"{label}: {len(ghosts)}")
             for g in ghosts:
-                m = g["matched_settled"]
-                matched = (
-                    f"settled [{m['id']}] {m['date']} {m['amount']:.2f}"
-                    if m
-                    else "split-authorization group"
-                )
+                m = g.get("matched_settled")
+                match_type = g.get("match_type", "exact")
+                if match_type == "forced":
+                    matched = "forced by --force-id (no confident counterpart)"
+                elif m:
+                    matched = f"settled [{m['id']}] {m['date']} {m['amount']:.2f}"
+                    if match_type == "inexact":
+                        matched += " (inexact amount match)"
+                    elif match_type == "split":
+                        matched += " (split-authorization group)"
+                else:
+                    matched = "split-authorization group"
                 print(
                     f"  [{g['id']}] {g['date']}  {g['amount']:>10.2f}  "
                     f"{g['description']}  <- {matched}"
@@ -1071,7 +1091,13 @@ def cmd_cleanup_pending(args):
         if unresolved:
             print(f"Unresolved pending transaction(s) kept for manual review: {len(unresolved)}")
             for u in unresolved:
-                print(f"  [{u['id']}] {u['date']}  {u['amount']:>10.2f}  {u['description']}")
+                note = (
+                    "  [probable cancellation: no counterpart found]"
+                    if u.get("probable_cancelled") else ""
+                )
+                print(f"  [{u['id']}] {u['date']}  {u['amount']:>10.2f}  {u['description']}{note}")
+                for c in (u.get("candidates") or [])[:3]:
+                    print(f"      candidate: settled [{c['id']}] {c['date']} {c['amount']:.2f}")
 
         if args.dry_run or not ghosts:
             return
@@ -1081,7 +1107,7 @@ def cmd_cleanup_pending(args):
             getattr(args, "yes", False),
         )
 
-        report = db.cleanup_pending(dry_run=False)
+        report = db.cleanup_pending(dry_run=False, force_ids=force_ids)
         print(f"Deleted {report['deleted']} ghost pending transaction(s).")
     finally:
         db.disconnect()
@@ -2180,6 +2206,10 @@ def main():
     )
     p_cleanup_pending.add_argument("--dry-run", action="store_true", help="Show ghost pending transactions without deleting them")
     p_cleanup_pending.add_argument("--yes", "-y", action="store_true", help="Bypass confirmation prompt")
+    p_cleanup_pending.add_argument(
+        "--force-id", action="append", type=int, default=None, metavar="ID",
+        help="Delete a specific pending transaction by id (repeatable), overriding match confidence",
+    )
     p_cleanup_pending.set_defaults(func=cmd_cleanup_pending)
 
     # link

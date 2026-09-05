@@ -99,7 +99,7 @@ The following commands require confirmation:
 - `remove-rule <id> [--yes]`
 - `unlink <id> [--yes]`
 - `db-cleanup [--yes] [--dry-run]`
-- `cleanup-pending [--yes] [--dry-run]`
+- `cleanup-pending [--yes] [--dry-run] [--force-id <id>...]`
 - `remove-transfer-rule <id> [--yes]`
 - `auto-link [--yes] [--dry-run]`
 
@@ -138,7 +138,7 @@ The following commands require confirmation:
 | `auto-link [--dry-run] [--yes]` | Auto-detect and link internal transfers using transfer rules (requires confirmation or `-y` when not running dry-run) |
 | `recalculate` | Manually recalculate adjusted amounts for all transactions |
 | `db-cleanup [--dry-run] [--yes]` | Purge orphaned transaction links and rules (Integrity Cleanup) (requires confirmation or `-y` when not running dry-run) |
-| `cleanup-pending [--dry-run] [--yes]` | Delete ghost pending reservations whose settled counterpart already exists (individual or split-authorization matches); unresolved pendings are kept and listed for manual review (requires confirmation or `-y` when not running dry-run) |
+| `cleanup-pending [--dry-run] [--yes] [--force-id <id>...]` | Delete ghost pending reservations whose settled counterpart already exists (individual, split-authorization, or inexact amount matches — e.g. merchants that authorize a buffer and settle a different final amount; inexact matches fire only when unambiguous). Unresolved pendings are kept, listed with nearby same-merchant candidates, flagged as probable cancellations when old with no counterpart, and can be deleted explicitly via `--force-id` (requires confirmation or `-y` when not running dry-run) |
 | `remove-transfer-rule <id> [--yes]` | Remove a transfer detection rule (requires confirmation or `-y`) |
 | `salary-config` | Show current salary period configuration |
 | `set-salary-mode <mode>` | Set the salary period mode (`calendar`, `fixed`, `salary`) |

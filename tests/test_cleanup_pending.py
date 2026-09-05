@@ -220,10 +220,10 @@ class TestCleanupPending:
         assert _count(db, "pending") == 1
 
     def test_cleanup_keeps_unresolved_amount_mismatch(self, db):
-        """A pending whose settled counterpart settled for a different amount stays."""
+        """A pending whose settled counterpart is far outside the inexact band stays."""
         acct = _setup_account(db)
         _add_txn(db, acct, "2026-06-17", "Reservation Kortköp MARKNADEN", -100.00, "pending")
-        _add_txn(db, acct, "2026-06-19", "Kortköp 260618 MARKNADEN STHLM", -80.00, "settled")
+        _add_txn(db, acct, "2026-06-19", "Kortköp 260618 MARKNADEN STHLM", -50.00, "settled")
 
         report = db.cleanup_pending(dry_run=False)
         assert report["deleted"] == 0
