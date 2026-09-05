@@ -64,7 +64,11 @@ def aggregate_tolerance(amount: float) -> float:
 # |settled| is between INEXACT_LOW and INEXACT_HIGH times |reservation|
 # (same sign). Asymmetric on purpose: reservations buffer UP for weighed
 # items (settle lower), while currency conversion or tips settle higher.
-INEXACT_LOW = 0.70
+# The floor is deliberately conservative: typical buffer haircuts are modest,
+# and a settlement far below the reservation could instead be a genuinely
+# separate purchase from the same merchant. Larger gaps stay unresolved for
+# manual review (candidates + cleanup-pending --force-id).
+INEXACT_LOW = 0.85
 INEXACT_HIGH = 1.05
 
 

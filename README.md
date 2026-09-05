@@ -10,7 +10,7 @@ Imports bank CSV files, auto-categorizes transactions using configurable rules, 
 - **Auto-categorization** — regex, exact, and contains match rules with priority ordering and manual overrides
 - **Transaction linking** — mark transfers and reimbursements between transactions; adjusted amounts are pre-computed
 - **SQL views** — ready-to-query views for monthly summaries, category breakdowns, and daily spending
-- **CSV import** — auto-detects Nordea and ICA formats, handles pending transactions (umlaut-variant and split-authorization settlement)
+- **CSV import** — auto-detects Nordea and ICA formats, handles pending transactions (umlaut-variant, split-authorization, and inexact buffer settlement; see [Pending Transactions](#pending-transactions-reservations))
 - **CLI** — full command-line interface for all operations
 
 ## Install
@@ -75,6 +75,24 @@ All data lives in a single SQLite database (`data/finance.db` by default).
 3. `raw_amount` (Household Raw): Full raw household cost before split and before reimbursements (i.e. the raw bank statement amount). Enabled in stats with the `--gross` flag.
 
 Stats and views read these columns directly. Run `recalculate` to refresh after any manual changes.
+
+## Pending Transactions (Reservations)
+
+Card reservations (`Reserverat` rows) are temporary holds the bank places before a merchant settles the final charge. The intent behind the pending lifecycle is simple: **every reservation goes somewhere** — it settles (at the same amount, as a re-authorized group, or at a different final amount) or it was cancelled. A reservation should never linger silently in the database as a second copy of a purchase that already settled.
+
+At import, a settled charge resolves an outstanding reservation through three passes, in order:
+
+1. **Exact** — settled amount within 1.0 SEK of the reservation.
+2. **Split-authorization** — 2–4 reservations for the same merchant that sum to the settled charge (within `max(1.0 SEK, 0.5%)`).
+3. **Inexact** — for merchants that authorize a buffer and settle a different final amount (weighed goods, fuel pre-auths, tips, currency conversion). The settled amount must be within **85%–105%** of the reservation (same sign). The floor is deliberately conservative: typical buffer haircuts are modest and auto-resolve, while a settlement far below the reservation — which could be a genuinely separate purchase from the same merchant — is left for manual review instead of an automatic guess.
+
+Inexact matching only fires when the pairing is **mutually unique**: exactly one outstanding reservation lies inside the settled charge's amount band, AND no other settled charge in the database can claim that reservation. Any ambiguity — two candidate reservations, or two candidate settled charges — means no automatic action; the case is surfaced for review instead.
+
+Additional lifecycle guarantees:
+
+- **Re-listed reservations are skipped, not re-inserted** — an outstanding reservation that appears again in a later export is the same pending, not a new transaction.
+- **Disappearance warnings** — a pending reservation that is absent from a current export, at least 14 days old, with no settled counterpart, triggers an import warning: it most likely was cancelled or settled under a different amount, and belongs in `cleanup-pending`.
+- **`cleanup-pending`** deletes provable ghosts (labeled exact / split / inexact), lists unresolved reservations with nearby same-merchant settled charges as candidate hints, flags long-outstanding pendings with no candidates as probable cancellations, and accepts `--force-id <id>` (repeatable) to delete a specific pending explicitly after review.
 
 ## Security & Data Integrity
 
