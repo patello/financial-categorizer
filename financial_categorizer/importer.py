@@ -7,23 +7,18 @@ into the SQLite database with deduplication. Handles pending transactions
 
 import csv
 import datetime
+import itertools
 import os
 import logging
 import re
 
+from financial_categorizer.matching import aggregate_tolerance, clean_description
+
 logger = logging.getLogger(__name__)
 
 
-def clean_description(desc: str) -> str:
-    """Normalize descriptions by removing bank transaction prefixes."""
-    d = desc.lower()
-    # Matches 'reservation kortköp', 'reservation kortkp', 'reservation kortk\xf6p', etc.
-    d = re.sub(r'^reservation\s+kortk[\xf6\ufffd\w]+p\s+', '', d)
-    # Matches 'kortköp YYMMDD', 'kortkp YYMMDD', etc.
-    d = re.sub(r'^kortk[\xf6\ufffd\w]+p\s+\d{6}\s+', '', d)
-    # Fallback to remove standalone reservation prefix
-    d = re.sub(r'^reservation\s+', '', d)
-    return d.strip()
+# clean_description / aggregate_tolerance now live in financial_categorizer.matching
+# (re-exported via the module import above for backwards compatibility).
 
 
 # Known CSV formats. Detection uses a unique header combo per format.
@@ -115,6 +110,40 @@ def _has_matching_settled(cur, account_id: int, pending_date: datetime.date, pen
         return True
         
     return False
+
+def _match_split_reservations(pending_candidates, settled_desc, settled_date, settled_amount):
+    """Find 2-4 pending reservations whose amounts sum to one settled charge.
+
+    Banks sometimes split a single card purchase into several authorization
+    reservations that later settle as ONE charge. Tries every combination of
+    2-4 same-description candidates inside the usual 10-day window and
+    returns the matching group of ids (or an empty list).
+    """
+    settled_clean = clean_description(settled_desc)
+    s_dt = datetime.date.fromisoformat(settled_date) if isinstance(settled_date, str) else settled_date
+
+    pool = []
+    for p_id, p_desc, p_date, p_amount in pending_candidates:
+        p_clean = clean_description(p_desc)
+        if p_clean not in settled_clean and settled_clean not in p_clean:
+            continue
+        p_dt = datetime.date.fromisoformat(p_date) if isinstance(p_date, str) else p_date
+        if not (0 <= (s_dt - p_dt).days <= 10):
+            continue
+        if (p_amount < 0) != (settled_amount < 0):
+            continue
+        pool.append((p_id, p_amount))
+
+    if len(pool) < 2 or len(pool) > 8:
+        return []
+
+    tolerance = aggregate_tolerance(settled_amount)
+    for size in range(2, min(4, len(pool)) + 1):
+        for combo in itertools.combinations(pool, size):
+            if abs(sum(a for _, a in combo) - settled_amount) <= tolerance:
+                return [p_id for p_id, _ in combo]
+    return []
+
 
 def extract_account_identifier(file_path: str) -> str | None:
     """Extract bank account number/identifier from Nordea CSV columns or file path.
@@ -368,7 +397,12 @@ class CSVImporter:
                         matched_pending_id = p_id
                         break  # Pick the first matching candidate
                     
-                    if matched_pending_id is not None:
+                    matched_ids = (
+                        [matched_pending_id] if matched_pending_id is not None
+                        else _match_split_reservations(pending_candidates, description, txn_date, amount)
+                    )
+                    if matched_ids:
+                        primary_id = matched_ids[0]
                         # Pre-check: Check if the settled version already exists in the database.
                         cur.execute(
                             "SELECT id FROM transactions "
@@ -376,30 +410,36 @@ class CSVImporter:
                             (txn_date, description, amount, account_id),
                         )
                         if cur.fetchone() is not None:
-                            # The settled version already exists. We can safely delete the ghost pending transaction.
-                            cur.execute("DELETE FROM transactions WHERE id = ?", (matched_pending_id,))
+                            # The settled version already exists. We can safely delete the ghost pending transaction(s).
+                            for ghost_id in matched_ids:
+                                cur.execute("DELETE FROM transactions WHERE id = ?", (ghost_id,))
                             skipped += 1
                             details_skipped.append({
                                 "date": txn_date,
                                 "description": description,
                                 "amount": amount,
-                                "reason": "Settled version already exists; ghost pending transaction deleted"
+                                "reason": "Settled version already exists; ghost pending transaction(s) deleted"
                             })
                         else:
+                            # Settle the primary reservation in place; drop the extra reservations
+                            # that were merged into this settled charge (split authorizations).
                             cur.execute(
                                 "UPDATE transactions SET date = ?, description = ?, amount = ?, "
                                 "adjusted_amount = ? * "
                                 "(SELECT ownership_ratio FROM accounts WHERE accounts.id = account_id), "
                                 "status = 'settled', source_file = ? WHERE id = ?",
-                                (txn_date, description, amount, amount, file_path, matched_pending_id),
+                                (txn_date, description, amount, amount, file_path, primary_id),
                             )
+                            for merged_id in matched_ids[1:]:
+                                cur.execute("DELETE FROM transactions WHERE id = ?", (merged_id,))
                             settled_pending += 1
                             imported += 1
                             details_settled.append({
                                 "date": txn_date,
                                 "description": description,
                                 "amount": amount,
-                                "matched_pending_id": matched_pending_id
+                                "matched_pending_id": primary_id,
+                                "merged_pending_ids": matched_ids[1:],
                             })
                         continue
 
