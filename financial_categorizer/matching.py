@@ -55,3 +55,31 @@ def aggregate_tolerance(amount: float) -> float:
     single-transaction matches.
     """
     return max(1.0, abs(amount) * 0.005)
+
+
+# Amount band for inexact settlement matching. Some merchants (notably ICA
+# Maxi with weighed goods) authorize a reservation and settle a different
+# final amount, beyond the exact (1.0 SEK) and split-aggregate tolerances.
+# A settled charge qualifies as the inexact counterpart of a reservation when
+# |settled| is between INEXACT_LOW and INEXACT_HIGH times |reservation|
+# (same sign). Asymmetric on purpose: reservations buffer UP for weighed
+# items (settle lower), while currency conversion or tips settle higher.
+INEXACT_LOW = 0.70
+INEXACT_HIGH = 1.05
+
+
+def inexact_amount_match(
+    reservation_amount: float,
+    settled_amount: float,
+    low: float = INEXACT_LOW,
+    high: float = INEXACT_HIGH,
+) -> bool:
+    """True if settled_amount is plausibly the final charge for a
+    reservation authorized at a different amount: same sign and
+    |settled| within [low * |auth|, high * |auth|].
+    """
+    if (reservation_amount < 0) != (settled_amount < 0):
+        return False
+    lo = abs(reservation_amount) * low
+    hi = abs(reservation_amount) * high
+    return lo <= abs(settled_amount) <= hi
