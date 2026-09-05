@@ -4,8 +4,11 @@ Manages tables for transactions, categories, match rules, manual overrides,
 and metadata. Follows a connect/disconnect pattern with date type adapters.
 """
 
+import itertools
 import sqlite3
 from datetime import date, datetime
+
+from financial_categorizer.matching import aggregate_tolerance, clean_description
 
 
 def adapt_date(val):
@@ -622,6 +625,146 @@ class DatabaseHandler:
             "orphaned_id_matches": orphaned_id_matches,
             "orphaned_links": orphaned_links
         }
+
+    def cleanup_pending(self, dry_run: bool = False) -> dict:
+        """Find and optionally delete ghost pending transactions.
+
+        A ghost pending is a reservation whose settled counterpart already
+        exists in the database — matched individually or as part of a
+        split-authorization group — so keeping it would double-count the
+        purchase. Unresolved pendings (no confident settled counterpart)
+        are kept and reported for manual review.
+
+        Returns a dict:
+        {
+            "deleted": int,
+            "ghosts": [ {"id", "date", "amount", "description", "matched_settled"} ],
+            "unresolved": [ {"id", "date", "amount", "description"} ]
+        }
+        """
+        cur = self.get_cursor()
+        cur.execute(
+            "SELECT id, account_id, date, description, amount FROM transactions "
+            "WHERE status = 'pending' ORDER BY date, id"
+        )
+        pendings = cur.fetchall()
+        cur.execute(
+            "SELECT id, account_id, date, description, amount FROM transactions "
+            "WHERE status = 'settled' ORDER BY date, id"
+        )
+        settled = cur.fetchall()
+
+        settled_by_id = {s[0]: s for s in settled}
+        consumed_settled = set()
+        resolved = set()   # pending ids matched to a settled counterpart
+        matches = []       # (pending_id, settled_id)
+
+        def _as_date(val):
+            if isinstance(val, datetime):
+                return val.date()
+            if isinstance(val, date):
+                return val
+            return date.fromisoformat(str(val))
+
+        # Pass 1: individual matches (same rules as the importer: cleaned
+        # description substring, settled 0-10 days after pending, amount
+        # within 1.0 SEK). Each settled row can only justify one pending.
+        for p_id, p_acct, p_date, p_desc, p_amount in pendings:
+            p_clean = clean_description(p_desc)
+            p_dt = _as_date(p_date)
+            for s_id, s_acct, s_date, s_desc, s_amount in settled:
+                if s_acct != p_acct or s_id in consumed_settled:
+                    continue
+                s_clean = clean_description(s_desc)
+                if p_clean not in s_clean and s_clean not in p_clean:
+                    continue
+                if not (0 <= (_as_date(s_date) - p_dt).days <= 10):
+                    continue
+                if (s_amount < 0) != (p_amount < 0):
+                    continue
+                if abs(s_amount - p_amount) > 1.0:
+                    continue
+                matches.append((p_id, s_id))
+                consumed_settled.add(s_id)
+                resolved.add(p_id)
+                break
+
+        # Pass 2: split-authorization groups (sum of 2-4 pendings vs one
+        # settled charge, within the importer's aggregate tolerance).
+        for s_id, s_acct, s_date, s_desc, s_amount in settled:
+            if s_id in consumed_settled:
+                continue
+            s_clean = clean_description(s_desc)
+            s_dt = _as_date(s_date)
+            pool = []
+            for p_id, p_acct, p_date, p_desc, p_amount in pendings:
+                if p_acct != s_acct or p_id in resolved:
+                    continue
+                p_clean = clean_description(p_desc)
+                if p_clean not in s_clean and s_clean not in p_clean:
+                    continue
+                if not (0 <= (s_dt - _as_date(p_date)).days <= 10):
+                    continue
+                if (p_amount < 0) != (s_amount < 0):
+                    continue
+                pool.append((p_id, p_amount))
+            if len(pool) < 2 or len(pool) > 8:
+                continue
+            tolerance = aggregate_tolerance(s_amount)
+            matched_group = None
+            for size in range(2, min(4, len(pool)) + 1):
+                for combo in itertools.combinations(pool, size):
+                    if abs(sum(a for _, a in combo) - s_amount) <= tolerance:
+                        matched_group = combo
+                        break
+                if matched_group:
+                    break
+            if matched_group:
+                for p_id, _ in matched_group:
+                    matches.append((p_id, s_id))
+                    resolved.add(p_id)
+                consumed_settled.add(s_id)
+
+        ghosts = []
+        for p_id, s_id in matches:
+            p = next((x for x in pendings if x[0] == p_id), None)
+            s = settled_by_id.get(s_id)
+            if p is None:
+                continue
+            ghosts.append({
+                "id": p[0],
+                "date": p[2],
+                "amount": p[4],
+                "description": p[3],
+                "matched_settled": (
+                    {"id": s[0], "date": s[2], "amount": s[4]} if s else None
+                ),
+            })
+        unresolved = [
+            {"id": p[0], "date": p[2], "amount": p[4], "description": p[3]}
+            for p in pendings
+            if p[0] not in resolved
+        ]
+
+        deleted = 0
+        if not dry_run and ghosts:
+            ids = [g["id"] for g in ghosts]
+            placeholders = ",".join("?" * len(ids))
+            cur.execute(
+                f"SELECT COUNT(*) FROM transaction_links "
+                f"WHERE from_transaction_id IN ({placeholders}) "
+                f"OR to_transaction_id IN ({placeholders})",
+                ids + ids,
+            )
+            affects_links = cur.fetchone()[0] > 0
+            for ghost in ghosts:
+                cur.execute("DELETE FROM transactions WHERE id = ?", (ghost["id"],))
+                deleted += 1
+            self.commit()
+            if affects_links:
+                self.recalculate_adjusted_amounts()
+
+        return {"deleted": deleted, "ghosts": ghosts, "unresolved": unresolved}
 
     def delete_account(self, account_id: int) -> bool:
         """Delete an account. Fails if transactions reference it (ON DELETE RESTRICT).

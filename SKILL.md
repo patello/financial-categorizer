@@ -294,6 +294,7 @@ financial-categorizer/
     ├── categorizer.py          # Auto-categorization & rule engine
     ├── db_handler.py           # Database CRUD & raw schema setup
     ├── importer.py             # CSV Parser (Nordea & ICA formats)
+    ├── matching.py             # Shared matching helpers (diacritic folding, aggregate tolerance)
     └── stats.py                # SQL View registers and stats math
 ```
 

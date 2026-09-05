@@ -1040,6 +1040,53 @@ def cmd_cleanup(args):
         db.disconnect()
 
 
+def cmd_cleanup_pending(args):
+    db = get_db(args.db)
+    try:
+        report = db.cleanup_pending(dry_run=True)
+        ghosts = report["ghosts"]
+        unresolved = report["unresolved"]
+
+        if ghosts:
+            label = (
+                "Ghost pending transaction(s) that would be deleted"
+                if args.dry_run
+                else "Ghost pending transaction(s) to delete"
+            )
+            print(f"{label}: {len(ghosts)}")
+            for g in ghosts:
+                m = g["matched_settled"]
+                matched = (
+                    f"settled [{m['id']}] {m['date']} {m['amount']:.2f}"
+                    if m
+                    else "split-authorization group"
+                )
+                print(
+                    f"  [{g['id']}] {g['date']}  {g['amount']:>10.2f}  "
+                    f"{g['description']}  <- {matched}"
+                )
+        else:
+            print("No ghost pending transactions found.")
+
+        if unresolved:
+            print(f"Unresolved pending transaction(s) kept for manual review: {len(unresolved)}")
+            for u in unresolved:
+                print(f"  [{u['id']}] {u['date']}  {u['amount']:>10.2f}  {u['description']}")
+
+        if args.dry_run or not ghosts:
+            return
+
+        confirm_action(
+            f"Are you sure you want to delete {len(ghosts)} ghost pending transaction(s)?",
+            getattr(args, "yes", False),
+        )
+
+        report = db.cleanup_pending(dry_run=False)
+        print(f"Deleted {report['deleted']} ghost pending transaction(s).")
+    finally:
+        db.disconnect()
+
+
 def cmd_link(args):
     db = get_db(args.db)
     try:
@@ -2125,6 +2172,15 @@ def main():
     p_cleanup.add_argument("--dry-run", action="store_true", help="Show orphaned records without deleting them")
     p_cleanup.add_argument("--yes", "-y", action="store_true", help="Bypass confirmation prompt")
     p_cleanup.set_defaults(func=cmd_cleanup)
+
+    # cleanup-pending
+    p_cleanup_pending = subparsers.add_parser(
+        "cleanup-pending",
+        help="Delete ghost pending reservations whose settled counterpart already exists",
+    )
+    p_cleanup_pending.add_argument("--dry-run", action="store_true", help="Show ghost pending transactions without deleting them")
+    p_cleanup_pending.add_argument("--yes", "-y", action="store_true", help="Bypass confirmation prompt")
+    p_cleanup_pending.set_defaults(func=cmd_cleanup_pending)
 
     # link
     p_link = subparsers.add_parser("link", help="Link two transactions")
