@@ -10,7 +10,7 @@ Imports bank CSV files, auto-categorizes transactions using configurable rules, 
 - **Auto-categorization** — regex, exact, and contains match rules with priority ordering and manual overrides
 - **Transaction linking** — mark transfers and reimbursements between transactions; adjusted amounts are pre-computed
 - **SQL views** — ready-to-query views for monthly summaries, category breakdowns, and daily spending
-- **CSV import** — auto-detects Nordea and ICA formats, handles pending transactions
+- **CSV import** — auto-detects Nordea and ICA formats, handles pending transactions (umlaut-variant and split-authorization settlement)
 - **CLI** — full command-line interface for all operations
 
 ## Install
@@ -99,6 +99,7 @@ The following commands require confirmation:
 - `remove-rule <id> [--yes]`
 - `unlink <id> [--yes]`
 - `db-cleanup [--yes] [--dry-run]`
+- `cleanup-pending [--yes] [--dry-run]`
 - `remove-transfer-rule <id> [--yes]`
 - `auto-link [--yes] [--dry-run]`
 
@@ -137,6 +138,7 @@ The following commands require confirmation:
 | `auto-link [--dry-run] [--yes]` | Auto-detect and link internal transfers using transfer rules (requires confirmation or `-y` when not running dry-run) |
 | `recalculate` | Manually recalculate adjusted amounts for all transactions |
 | `db-cleanup [--dry-run] [--yes]` | Purge orphaned transaction links and rules (Integrity Cleanup) (requires confirmation or `-y` when not running dry-run) |
+| `cleanup-pending [--dry-run] [--yes]` | Delete ghost pending reservations whose settled counterpart already exists (individual or split-authorization matches); unresolved pendings are kept and listed for manual review (requires confirmation or `-y` when not running dry-run) |
 | `remove-transfer-rule <id> [--yes]` | Remove a transfer detection rule (requires confirmation or `-y`) |
 | `salary-config` | Show current salary period configuration |
 | `set-salary-mode <mode>` | Set the salary period mode (`calendar`, `fixed`, `salary`) |
