@@ -394,6 +394,21 @@ class CSVImporter:
 
             cur = self.db.get_cursor()
 
+            # Multiset of postings already stored for this account, used to
+            # tell apart genuinely identical rows (same date, description,
+            # amount and status) from re-imported duplicates.
+            cur.execute(
+                "SELECT date, description, amount, status, COUNT(*) "
+                "FROM transactions WHERE account_id = ? "
+                "GROUP BY date, description, amount, status",
+                (account_id,),
+            )
+            existing_counts = {
+                (str(d), desc, amount, status): n
+                for d, desc, amount, status, n in cur.fetchall()
+            }
+            batch_index = {}
+
             seen_reservations = set()       # (cleaned desc, amount) listed in this export
             settled_dates_seen = []         # settled row dates listed in this export
 
@@ -548,12 +563,31 @@ class CSVImporter:
                         })
                         continue
 
+                # Rows are matched to already-stored postings as a multiset:
+                # for a group of N identical rows in the file, the first E
+                # (pre-existing) occurrences are skipped and any extra rows are
+                # stored with the next occurrence number. This keeps re-imports
+                # idempotent while no longer dropping genuinely distinct rows.
+                txn_key = (str(txn_date), description, amount, status)
+                group_idx = batch_index.get(txn_key, 0)
+                batch_index[txn_key] = group_idx + 1
+                if group_idx < existing_counts.get(txn_key, 0):
+                    skipped += 1
+                    details_skipped.append({
+                        "date": txn_date,
+                        "description": description,
+                        "amount": amount,
+                        "reason": "Duplicate of an already-imported transaction",
+                    })
+                    continue
+                occurrence = group_idx + 1
+
                 try:
                     cur.execute(
-                        "INSERT INTO transactions (date, description, amount, account_id, source_file, status, adjusted_amount) "
+                        "INSERT INTO transactions (date, description, amount, account_id, source_file, status, adjusted_amount, occurrence) "
                         "VALUES (?, ?, ?, ?, ?, ?, ? * "
-                        "(SELECT ownership_ratio FROM accounts WHERE accounts.id = ?))",
-                        (txn_date, description, amount, account_id, file_path, status, amount, account_id),
+                        "(SELECT ownership_ratio FROM accounts WHERE accounts.id = ?), ?)",
+                        (txn_date, description, amount, account_id, file_path, status, amount, account_id, occurrence),
                     )
                     imported += 1
                     details_new.append({

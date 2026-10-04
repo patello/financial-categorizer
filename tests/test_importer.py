@@ -471,29 +471,96 @@ class TestImportDetailsDict:
         csv_content = (
             "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
             "2024-01-04;-500,00;1111;;;A1;999,99;SEK\n" # new settled
-            "2024-01-04;-500,00;1111;;;A1;999,99;SEK\n" # duplicate/skip
+            "2024-01-04;-500,00;1111;;;A1;999,99;SEK\n" # identical posting (kept, occurrence 2)
             "Reserverat;-10,00;1111;;;B1;999,99;SEK\n"  # new pending
             "invalid-row;abc;def;;;;;\n"                 # parsing error
         )
         path = _write_csv(csv_content)
         try:
             result = importer.import_file(path, account_name="test_details")
-            assert result["imported"] == 2
-            assert result["skipped"] == 1
+            assert result["imported"] == 3
+            assert result["skipped"] == 0
             assert result["errors"] == 1
             
             details = result["details"]
-            assert len(details["new"]) == 2
+            assert len(details["new"]) == 3
             assert details["new"][0]["description"] == "A1"
             assert details["new"][0]["status"] == "settled"
-            assert details["new"][1]["description"] == "B1"
-            assert details["new"][1]["status"] == "pending"
+            assert details["new"][1]["description"] == "A1"
+            assert details["new"][1]["status"] == "settled"
+            assert details["new"][2]["description"] == "B1"
+            assert details["new"][2]["status"] == "pending"
             
-            assert len(details["skipped"]) == 1
-            assert details["skipped"][0]["description"] == "A1"
+            assert len(details["skipped"]) == 0
             
             assert len(details["failures"]) == 1
             assert details["failures"][0]["row"][0] == "invalid-row"
         finally:
             os.unlink(path)
 
+
+
+IDENTICAL_CSV = (
+    "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
+    "2026-09-25;-7,00;1111 11 11111;;;Swish betalning Beer AW;995,00;SEK\n"
+    "2026-09-25;-7,00;1111 11 11111;;;Swish betalning Beer AW;988,00;SEK\n"
+    "2026-09-25;-7,00;1111 11 11111;;;Swish betalning Beer AW;981,00;SEK\n"
+)
+
+
+class TestIdenticalTransactions:
+    """Identical postings on the same day must not be silently collapsed."""
+
+    def test_identical_rows_are_all_imported(self, importer, db):
+        path = _write_csv(IDENTICAL_CSV)
+        try:
+            result = importer.import_file(path, account_name="Nordea Checking")
+            assert result["imported"] == 3, result
+            assert result["skipped"] == 0, result
+            cur = db.get_cursor()
+            cur.execute(
+                "SELECT occurrence FROM transactions "
+                "WHERE description = 'Swish betalning Beer AW' ORDER BY occurrence"
+            )
+            assert [r[0] for r in cur.fetchall()] == [1, 2, 3]
+        finally:
+            os.unlink(path)
+
+    def test_reimport_is_idempotent(self, importer, db):
+        path = _write_csv(IDENTICAL_CSV)
+        try:
+            assert importer.import_file(path, account_name="Nordea Checking")["imported"] == 3
+            second = importer.import_file(path, account_name="Nordea Checking")
+            assert second["imported"] == 0, second
+            assert second["skipped"] == 3, second
+            cur = db.get_cursor()
+            cur.execute(
+                "SELECT COUNT(*) FROM transactions "
+                "WHERE description = 'Swish betalning Beer AW'"
+            )
+            assert cur.fetchone()[0] == 3
+        finally:
+            os.unlink(path)
+
+    def test_new_identical_row_in_later_export_is_added(self, importer, db):
+        first = _write_csv(IDENTICAL_CSV)
+        second = _write_csv(
+            "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
+            "2026-09-25;-7,00;1111 11 11111;;;Swish betalning Beer AW;995,00;SEK\n"
+            "2026-09-25;-7,00;1111 11 11111;;;Swish betalning Beer AW;988,00;SEK\n"
+            "2026-10-02;-7,00;1111 11 11111;;;Swish betalning Beer AW;974,00;SEK\n"
+        )
+        try:
+            assert importer.import_file(first, account_name="Nordea Checking")["imported"] == 3
+            result = importer.import_file(second, account_name="Nordea Checking")
+            assert result["imported"] == 1, result
+            assert result["skipped"] == 2, result
+            cur = db.get_cursor()
+            cur.execute(
+                "SELECT COUNT(*) FROM transactions "
+                "WHERE description = 'Swish betalning Beer AW'"
+            )
+            assert cur.fetchone()[0] == 4
+        finally:
+            os.unlink(first)
+            os.unlink(second)

@@ -153,7 +153,8 @@ class DatabaseHandler:
                             CHECK(status IN ('pending','settled')),
                 matched_rule_id INTEGER REFERENCES match_rules(id) ON DELETE SET NULL,
                 adjusted_amount REAL,
-                UNIQUE(date, description, amount, account_id, status)
+                occurrence  INTEGER NOT NULL DEFAULT 1,
+                UNIQUE(date, description, amount, account_id, status, occurrence)
             )""")
 
         cur.execute("""
@@ -339,8 +340,93 @@ class DatabaseHandler:
             stats = Stats(self)
             stats._ensure_views()
 
+        # Migration: add the ``occurrence`` column and relax the transactions
+        # uniqueness constraint so genuinely identical postings (same date,
+        # description, amount, account and status) can coexist. Older databases
+        # carried UNIQUE(date, description, amount, account_id, status), which
+        # silently collapsed such rows on import. Run after the corrupt-DB
+        # repair so a legacy schema is rebuilt first.
+        cur.execute("PRAGMA table_info(transactions)")
+        cols_tx = [row[1] for row in cur.fetchall()]
+        if "occurrence" not in cols_tx:
+            self._migrate_transactions_add_occurrence(cur)
+
         cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
         return [row[0] for row in cur.fetchall()]
+
+    def _migrate_transactions_add_occurrence(self, cur) -> None:
+        """Rebuild the transactions table with an ``occurrence`` column.
+
+        SQLite cannot drop a table-level UNIQUE constraint in place, so the
+        table is rebuilt. ``occurrence`` numbers identical postings
+        (same date/description/amount/account/status) 1..N; every pre-existing
+        row becomes occurrence 1. Foreign keys are disabled for the rebuild and
+        any dropped views are recreated afterwards.
+        """
+        from financial_categorizer.stats import Stats
+
+        cur.execute("PRAGMA foreign_keys = OFF;")
+        old_isolation = self.conn.isolation_level
+        self.conn.isolation_level = None
+        dropped_views = []
+        try:
+            cur.execute("SELECT name FROM sqlite_master WHERE type='view'")
+            dropped_views = [r[0] for r in cur.fetchall()]
+            for view_name in dropped_views:
+                cur.execute(f"DROP VIEW IF EXISTS {view_name};")
+
+            cur.execute("BEGIN TRANSACTION;")
+            cur.execute("""
+                CREATE TABLE transactions_new(
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    date        DATE NOT NULL,
+                    description TEXT NOT NULL,
+                    amount      REAL NOT NULL,
+                    account_id  INTEGER NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
+                    source_file TEXT,
+                    imported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+                    comment     TEXT,
+                    status      TEXT NOT NULL DEFAULT 'settled'
+                                CHECK(status IN ('pending','settled')),
+                    matched_rule_id INTEGER REFERENCES match_rules(id) ON DELETE SET NULL,
+                    adjusted_amount REAL,
+                    recurring_id INTEGER REFERENCES recurring_payments(id) ON DELETE SET NULL,
+                    occurrence  INTEGER NOT NULL DEFAULT 1,
+                    UNIQUE(date, description, amount, account_id, status, occurrence)
+                )""")
+
+            # Copy whatever columns the legacy table actually has (very old
+            # schemas may lack matched_rule_id / recurring_id / adjusted_amount).
+            cur.execute("PRAGMA table_info(transactions)")
+            legacy_cols = [row[1] for row in cur.fetchall()]
+            new_cols = {
+                "id", "date", "description", "amount", "account_id",
+                "source_file", "imported_at", "category_id", "comment",
+                "status", "matched_rule_id", "adjusted_amount", "recurring_id",
+            }
+            copy_cols = [c for c in legacy_cols if c in new_cols]
+            cols_str = ", ".join(copy_cols + ["occurrence"])
+            select_str = ", ".join(copy_cols + ["1"])
+            cur.execute(
+                f"INSERT INTO transactions_new ({cols_str}) SELECT {select_str} FROM transactions"
+            )
+            cur.execute("DROP TABLE transactions;")
+            cur.execute("ALTER TABLE transactions_new RENAME TO transactions;")
+            cur.execute("COMMIT;")
+        except Exception:
+            try:
+                cur.execute("ROLLBACK;")
+            except sqlite3.OperationalError:
+                pass
+            raise
+        finally:
+            cur.execute("PRAGMA foreign_keys = ON;")
+            self.conn.isolation_level = old_isolation
+
+        if dropped_views:
+            Stats(self)._ensure_views()
+        self.conn.commit()
 
     # ------------------------------------------------------------------ #
     #  Metadata helpers

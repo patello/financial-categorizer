@@ -278,3 +278,76 @@ class TestDatabaseHandler:
         assert len(txns_savings) == 1
         assert txns_savings[0]["id"] == t3
 
+
+
+class TestOccurrenceMigration:
+    """Old databases are rebuilt with an ``occurrence`` column (no data loss)."""
+
+    def _make_legacy_db(self, db_path):
+        import sqlite3
+        raw = sqlite3.connect(db_path)
+        raw.executescript(
+            """
+            CREATE TABLE accounts(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                type TEXT NOT NULL DEFAULT 'tracked',
+                ownership_ratio REAL NOT NULL DEFAULT 1.0,
+                currency TEXT NOT NULL DEFAULT 'SEK',
+                description TEXT,
+                cash_neutral INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE transactions(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date DATE NOT NULL,
+                description TEXT NOT NULL,
+                amount REAL NOT NULL,
+                account_id INTEGER NOT NULL REFERENCES accounts(id),
+                source_file TEXT,
+                imported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                category_id INTEGER,
+                comment TEXT,
+                status TEXT NOT NULL DEFAULT 'settled',
+                matched_rule_id INTEGER,
+                adjusted_amount REAL,
+                UNIQUE(date, description, amount, account_id, status)
+            );
+            INSERT INTO accounts (name) VALUES ('Legacy');
+            INSERT INTO transactions (date, description, amount, account_id, adjusted_amount)
+                VALUES ('2026-09-25', 'Swish betalning Beer AW', -7.0, 1, -7.0);
+            INSERT INTO transactions (date, description, amount, account_id, adjusted_amount)
+                VALUES ('2026-09-24', 'ICA', -100.0, 1, -100.0);
+            """
+        )
+        raw.commit()
+        raw.close()
+
+    def test_legacy_db_gains_occurrence_and_keeps_rows(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            self._make_legacy_db(db_path)
+            handler = DatabaseHandler(db_path)
+            cur = handler.get_cursor()
+            cur.execute("PRAGMA table_info(transactions)")
+            cols = {row[1] for row in cur.fetchall()}
+            assert "occurrence" in cols
+
+            # Existing rows survived and default to occurrence 1
+            cur.execute("SELECT description, occurrence FROM transactions ORDER BY id")
+            rows = cur.fetchall()
+            assert rows == [("Swish betalning Beer AW", 1), ("ICA", 1)]
+
+            # Duplicate identical postings can now coexist
+            cur.execute(
+                "INSERT INTO transactions (date, description, amount, account_id, occurrence) "
+                "VALUES ('2026-09-25', 'Swish betalning Beer AW', -7.0, 1, 2)"
+            )
+            handler.commit()
+            cur.execute(
+                "SELECT COUNT(*) FROM transactions WHERE description = 'Swish betalning Beer AW'"
+            )
+            assert cur.fetchone()[0] == 2
+            handler.disconnect()
+        finally:
+            os.unlink(db_path)
