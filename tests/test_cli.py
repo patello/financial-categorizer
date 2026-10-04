@@ -593,7 +593,7 @@ def test_cli_import_verbosity(temp_db, monkeypatch, capsys, tmp_path):
     assert "[SKIP]" in captured.out
     assert "[ERROR]" not in captured.out  # errors are in stderr, not stdout
     assert "[ERROR] Row in test_nordea.csv" in captured.err
-    assert "UNIQUE constraint" in captured.out
+    assert "Duplicate of an already-imported transaction" in captured.out
     assert "Total: 0 imported, 2 skipped, 1 errors" in captured.out
 
 
