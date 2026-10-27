@@ -32,12 +32,14 @@ CSV_FORMATS = {
         "date_col": "Bokföringsdag",
         "amount_col": "Belopp",
         "desc_col": "Rubrik",
+        "balance_col": "Saldo",
     },
     "ica": {
         "detect_headers": ["Datum", "Text", "Typ"],
         "date_col": "Datum",
         "amount_col": "Belopp",
         "desc_col": "Text",
+        "balance_col": "Saldo",
     },
 }
 
@@ -391,6 +393,14 @@ class CSVImporter:
             date_idx = header_row.index(fmt["date_col"])
             amount_idx = header_row.index(fmt["amount_col"])
             desc_idx = header_row.index(fmt["desc_col"])
+            # The Saldo column is optional: exports that omit it simply leave
+            # every stored balance NULL.
+            balance_col = fmt.get("balance_col")
+            balance_idx = (
+                header_row.index(balance_col)
+                if balance_col and balance_col in header_row
+                else None
+            )
 
             cur = self.db.get_cursor()
 
@@ -425,6 +435,11 @@ class CSVImporter:
                         txn_date = parse_date(raw_date)
                     amount = parse_amount(row[amount_idx])
                     description = row[desc_idx].strip()
+                    balance = None
+                    if balance_idx is not None and balance_idx < len(row):
+                        raw_balance = row[balance_idx].strip()
+                        if raw_balance:
+                            balance = parse_amount(raw_balance)
                 except (ValueError, IndexError) as e:
                     errors += 1
                     details_failures.append({
@@ -516,8 +531,8 @@ class CSVImporter:
                                 "UPDATE transactions SET date = ?, description = ?, amount = ?, "
                                 "adjusted_amount = ? * "
                                 "(SELECT ownership_ratio FROM accounts WHERE accounts.id = account_id), "
-                                "status = 'settled', source_file = ? WHERE id = ?",
-                                (txn_date, description, amount, amount, file_path, primary_id),
+                                "status = 'settled', source_file = ?, balance = ? WHERE id = ?",
+                                (txn_date, description, amount, amount, file_path, balance, primary_id),
                             )
                             for merged_id in matched_ids[1:]:
                                 cur.execute("DELETE FROM transactions WHERE id = ?", (merged_id,))
@@ -573,6 +588,17 @@ class CSVImporter:
                 batch_index[txn_key] = group_idx + 1
                 if group_idx < existing_counts.get(txn_key, 0):
                     skipped += 1
+                    # A re-import of an export that carries a Saldo column can
+                    # backfill balances on rows stored before balance parsing
+                    # existed. Only NULLs are filled, never overwritten.
+                    if balance is not None:
+                        cur.execute(
+                            "UPDATE transactions SET balance = ? "
+                            "WHERE account_id = ? AND date = ? AND description = ? "
+                            "AND amount = ? AND status = ? AND occurrence = ? "
+                            "AND balance IS NULL",
+                            (balance, account_id, txn_date, description, amount, status, group_idx + 1),
+                        )
                     details_skipped.append({
                         "date": txn_date,
                         "description": description,
@@ -584,10 +610,10 @@ class CSVImporter:
 
                 try:
                     cur.execute(
-                        "INSERT INTO transactions (date, description, amount, account_id, source_file, status, adjusted_amount, occurrence) "
+                        "INSERT INTO transactions (date, description, amount, account_id, source_file, status, adjusted_amount, balance, occurrence) "
                         "VALUES (?, ?, ?, ?, ?, ?, ? * "
-                        "(SELECT ownership_ratio FROM accounts WHERE accounts.id = ?), ?)",
-                        (txn_date, description, amount, account_id, file_path, status, amount, account_id, occurrence),
+                        "(SELECT ownership_ratio FROM accounts WHERE accounts.id = ?), ?, ?)",
+                        (txn_date, description, amount, account_id, file_path, status, amount, account_id, balance, occurrence),
                     )
                     imported += 1
                     details_new.append({
