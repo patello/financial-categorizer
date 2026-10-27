@@ -109,4 +109,19 @@ jobs:
           SLUG=$(jq -r '.slug' _meta.json)
           VERSION=$(jq -r '.version' _meta.json)
           CHANGELOG=$(cat changelog.txt)
-          clawhub publish . --slug "$SLUG" --version "$VERSION" --changelog "$CHANGELOG"
+          # `clawhub publish` does not move the "latest" dist-tag on its own, so
+          # a new release stays unreachable through the tag the installer
+          # resolves and installs fail with "version not found". Claim the tag
+          # explicitly, but only when this release is at least as new as the
+          # version currently tagged latest, so publishing an older patch can
+          # never drag the tag backwards.
+          CURRENT_LATEST=$(clawhub inspect "$SLUG" --json 2>/dev/null | jq -r '.skill.tags.latest // empty' || true)
+          TAG_ARGS=""
+          if [ -z "$CURRENT_LATEST" ] || [ "$(printf '%s\n%s\n' "$CURRENT_LATEST" "$VERSION" | sort -V | tail -n1)" = "$VERSION" ]; then
+            TAG_ARGS="--tags latest"
+            echo "Tagging ${VERSION} as latest (previous latest: ${CURRENT_LATEST:-none})"
+          else
+            echo "Publishing ${VERSION} without moving latest (current latest: ${CURRENT_LATEST})"
+          fi
+
+          clawhub publish . --slug "$SLUG" --version "$VERSION" --changelog "$CHANGELOG" $TAG_ARGS
