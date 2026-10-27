@@ -153,6 +153,7 @@ class DatabaseHandler:
                             CHECK(status IN ('pending','settled')),
                 matched_rule_id INTEGER REFERENCES match_rules(id) ON DELETE SET NULL,
                 adjusted_amount REAL,
+                balance     REAL,
                 occurrence  INTEGER NOT NULL DEFAULT 1,
                 UNIQUE(date, description, amount, account_id, status, occurrence)
             )""")
@@ -236,6 +237,9 @@ class DatabaseHandler:
         cols_tx = [row[1] for row in cur.fetchall()]
         if "recurring_id" not in cols_tx:
             cur.execute("ALTER TABLE transactions ADD COLUMN recurring_id INTEGER REFERENCES recurring_payments(id) ON DELETE SET NULL")
+
+        if "balance" not in cols_tx:
+            cur.execute("ALTER TABLE transactions ADD COLUMN balance REAL")
 
         cur.execute("PRAGMA table_info(transaction_links)")
         cols_links = [row[1] for row in cur.fetchall()]
@@ -392,6 +396,7 @@ class DatabaseHandler:
                     matched_rule_id INTEGER REFERENCES match_rules(id) ON DELETE SET NULL,
                     adjusted_amount REAL,
                     recurring_id INTEGER REFERENCES recurring_payments(id) ON DELETE SET NULL,
+                    balance     REAL,
                     occurrence  INTEGER NOT NULL DEFAULT 1,
                     UNIQUE(date, description, amount, account_id, status, occurrence)
                 )""")
@@ -404,6 +409,7 @@ class DatabaseHandler:
                 "id", "date", "description", "amount", "account_id",
                 "source_file", "imported_at", "category_id", "comment",
                 "status", "matched_rule_id", "adjusted_amount", "recurring_id",
+                "balance",
             }
             copy_cols = [c for c in legacy_cols if c in new_cols]
             cols_str = ", ".join(copy_cols + ["occurrence"])
@@ -535,6 +541,56 @@ class DatabaseHandler:
             }
             for row in cur.fetchall()
         ]
+
+    def get_balances(self, as_of: str | None = None) -> list[dict]:
+        """Return the latest known balance per account, from imported CSV data.
+
+        The bank CSV ``Saldo`` column is the account balance *after* each
+        posting, so an account's balance is the one on its most recent
+        balance-carrying row. Pending reservations never carry a balance (the
+        money has not left the account yet) and are ignored here.
+
+        Args:
+            as_of: Optional ISO date (YYYY-MM-DD). When given, the balance is
+                the last one known on or before that date instead of the
+                latest overall.
+
+        Returns:
+            One dict per account, in name order. ``date`` and ``balance`` are
+            None for accounts with no imported balance data yet.
+        """
+        cur = self.get_cursor()
+        cur.execute("SELECT id, name, type, currency FROM accounts ORDER BY name")
+        accounts = cur.fetchall()
+
+        balances = []
+        for acct_id, name, acct_type, currency in accounts:
+            if as_of:
+                cur.execute(
+                    "SELECT date, balance FROM transactions "
+                    "WHERE account_id = ? AND balance IS NOT NULL AND date <= ? "
+                    "ORDER BY date DESC, id DESC LIMIT 1",
+                    (acct_id, as_of),
+                )
+            else:
+                cur.execute(
+                    "SELECT date, balance FROM transactions "
+                    "WHERE account_id = ? AND balance IS NOT NULL "
+                    "ORDER BY date DESC, id DESC LIMIT 1",
+                    (acct_id,),
+                )
+            row = cur.fetchone()
+            balances.append(
+                {
+                    "account_id": acct_id,
+                    "name": name,
+                    "type": acct_type,
+                    "currency": currency,
+                    "date": row[0] if row else None,
+                    "balance": row[1] if row else None,
+                }
+            )
+        return balances
 
     def update_account(
         self,
