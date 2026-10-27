@@ -57,6 +57,7 @@ How it behaves:
 - Pending reservations (`Reserverat`) carry no balance — the money has not left the account yet — and are skipped.
 - Exports without a `Saldo` column import normally and leave the balance empty.
 - Re-importing an export fills balances on rows that were stored before balance parsing existed. It only fills empty balances and never overwrites an existing one.
+- Reservations (`Reserverat`) carry no date of their own. They are imported only from an export that reaches back to today (reservations are stored with the export's date), so replaying an old export cannot create a pending charge dated today.
 - An account with no balance data yet prints `n/a` rather than an inferred figure.
 
 ## Data Storage Pattern

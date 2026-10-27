@@ -51,12 +51,6 @@ NORDEA_WITH_SALDO = (
     "2024-01-02;1000,00;;1111 11 11111;;Inbetalning;10000,00;SEK\n"
 )
 
-NORDEA_WITH_PENDING = (
-    "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
-    "Reserverat;-120,00;1111 11 11111;;;Reservation Kortköp Cafe;;SEK\n"
-    "2024-01-02;-500,00;1111 11 11111;;;Kortköp Store;9500,00;SEK\n"
-)
-
 NORDEA_WITHOUT_SALDO = (
     "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Valuta\n"
     "2024-01-04;-500,00;1111 11 11111;;;Kortköp Store;SEK\n"
@@ -89,7 +83,12 @@ class TestImportStoresBalance:
             os.unlink(path)
 
     def test_pending_reservation_has_no_balance(self, db, importer):
-        path = _write_csv(NORDEA_WITH_PENDING)
+        today = date.today().isoformat()
+        path = _write_csv(
+            "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
+            "Reserverat;-120,00;1111 11 11111;;;Reservation Kortköp Cafe;;SEK\n"
+            f"{today};-500,00;1111 11 11111;;;Kortköp Store;9500,00;SEK\n"
+        )
         try:
             importer.import_file(path, account_name="Test Account")
             cur = db.get_cursor()

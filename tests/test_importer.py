@@ -3,7 +3,7 @@
 import os
 import tempfile
 import pytest
-from datetime import date
+from datetime import date, timedelta
 
 from financial_categorizer.db_handler import DatabaseHandler
 from financial_categorizer.importer import CSVImporter, parse_date, parse_amount, detect_format
@@ -468,10 +468,11 @@ class TestPendingTransactions:
 
 class TestImportDetailsDict:
     def test_import_details(self, importer, db):
+        today = date.today().isoformat()
         csv_content = (
             "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
-            "2024-01-04;-500,00;1111;;;A1;999,99;SEK\n" # new settled
-            "2024-01-04;-500,00;1111;;;A1;999,99;SEK\n" # identical posting (kept, occurrence 2)
+            f"{today};-500,00;1111;;;A1;999,99;SEK\n" # new settled
+            f"{today};-500,00;1111;;;A1;999,99;SEK\n" # identical posting (kept, occurrence 2)
             "Reserverat;-10,00;1111;;;B1;999,99;SEK\n"  # new pending
             "invalid-row;abc;def;;;;;\n"                 # parsing error
         )
@@ -564,3 +565,59 @@ class TestIdenticalTransactions:
         finally:
             os.unlink(first)
             os.unlink(second)
+
+
+class TestStaleReservations:
+    """Reservations are only meaningful in an export that reaches back to today."""
+
+    def test_reservation_skipped_from_old_export(self, importer, db):
+        old = (date.today() - timedelta(days=120)).isoformat()
+        path = _write_csv(
+            "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
+            "Reserverat;-500,00;1111 11 11111;;;Old Shop;1000,00;SEK\n"
+            f"{old};-10,00;1111 11 11111;;;Old Shop;1500,00;SEK\n"
+        )
+        try:
+            result = importer.import_file(path, account_name="stale")
+            assert result["imported"] == 1  # the dated row only
+            assert result["skipped"] == 1   # the stale reservation
+            cur = db.get_cursor()
+            cur.execute("SELECT COUNT(*) FROM transactions WHERE status = 'pending'")
+            assert cur.fetchone()[0] == 0
+        finally:
+            os.unlink(path)
+
+    def test_reservation_imported_from_current_export(self, importer, db):
+        today = date.today().isoformat()
+        path = _write_csv(
+            "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
+            "Reserverat;-500,00;1111 11 11111;;;Shop;1000,00;SEK\n"
+            f"{today};-10,00;1111 11 11111;;;Shop;1500,00;SEK\n"
+        )
+        try:
+            result = importer.import_file(path, account_name="current")
+            assert result["imported"] == 2
+            cur = db.get_cursor()
+            cur.execute("SELECT COUNT(*) FROM transactions WHERE status = 'pending'")
+            assert cur.fetchone()[0] == 1
+        finally:
+            os.unlink(path)
+
+    def test_reservations_only_export_uses_filename_date(self, importer, db):
+        old_day = date.today() - timedelta(days=200)
+        name = f"PERSONKONTO_1111_{old_day.strftime('%Y-%m-%d')}_09.00.00.csv"
+        content = (
+            "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
+            "Reserverat;-500,00;1111 11 11111;;;Shop;;SEK\n"
+        )
+        directory = tempfile.mkdtemp()
+        path = os.path.join(directory, name)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+        try:
+            result = importer.import_file(path, account_name="stale_only")
+            assert result["imported"] == 0
+            assert result["skipped"] == 1
+        finally:
+            os.unlink(path)
+            os.rmdir(directory)
