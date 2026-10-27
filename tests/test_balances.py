@@ -249,3 +249,54 @@ class TestSchemaMigration:
             assert cur.fetchone()[0] is None
         finally:
             handler.disconnect()
+
+
+class TestSameDayOrdering:
+    """Bank exports list postings newest-first within a day."""
+
+    SAME_DAY_CSV = (
+        "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
+        "2024-01-05;-100,00;1111 11 11111;;;Kortköp B;900,00;SEK\n"
+        "2024-01-05;-50,00;1111 11 11111;;;Kortköp A;1000,00;SEK\n"
+        "2024-01-04;-200,00;1111 11 11111;;;Kortköp C;1050,00;SEK\n"
+    )
+
+    def test_closing_balance_comes_from_the_newest_posting(self, db, importer):
+        path = _write_csv(self.SAME_DAY_CSV)
+        try:
+            importer.import_file(path, account_name="Test Account")
+            balances = {b["name"]: b for b in db.get_balances()}
+            # The first row of the day is the newest posting, so its Saldo is
+            # the closing balance — not the last row of the block.
+            assert balances["Test Account"]["balance"] == 900.00
+            assert str(balances["Test Account"]["date"]) == "2024-01-05"
+        finally:
+            os.unlink(path)
+
+    def test_as_of_uses_the_same_ordering(self, db, importer):
+        path = _write_csv(self.SAME_DAY_CSV)
+        try:
+            importer.import_file(path, account_name="Test Account")
+            balances = {b["name"]: b for b in db.get_balances(as_of="2024-01-05")}
+            assert balances["Test Account"]["balance"] == 900.00
+        finally:
+            os.unlink(path)
+
+    def test_later_import_wins_for_the_same_day(self, db, importer):
+        first = _write_csv(
+            "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
+            "2024-01-05;-50,00;1111 11 11111;;;Kortköp A;1000,00;SEK\n"
+        )
+        second = _write_csv(
+            "Bokföringsdag;Belopp;Avsändare;Mottagare;Namn;Rubrik;Saldo;Valuta\n"
+            "2024-01-05;-100,00;1111 11 11111;;;Kortköp B;900,00;SEK\n"
+            "2024-01-05;-50,00;1111 11 11111;;;Kortköp A;1000,00;SEK\n"
+        )
+        try:
+            importer.import_file(first, account_name="Test Account")
+            importer.import_file(second, account_name="Test Account")
+            balances = {b["name"]: b for b in db.get_balances()}
+            assert balances["Test Account"]["balance"] == 900.00
+        finally:
+            os.unlink(first)
+            os.unlink(second)
