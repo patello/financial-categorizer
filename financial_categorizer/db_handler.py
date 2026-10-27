@@ -550,6 +550,12 @@ class DatabaseHandler:
         balance-carrying row. Pending reservations never carry a balance (the
         money has not left the account yet) and are ignored here.
 
+        Within a single day the exports list postings newest-first, so the
+        newest posting is the row inserted *first* for that date and the
+        closing balance belongs to the lowest id of the most recent import.
+        Ordering by ``id DESC`` would instead return the day's opening balance,
+        because the last row of the block is the oldest posting.
+
         Args:
             as_of: Optional ISO date (YYYY-MM-DD). When given, the balance is
                 the last one known on or before that date instead of the
@@ -565,29 +571,43 @@ class DatabaseHandler:
 
         balances = []
         for acct_id, name, acct_type, currency in accounts:
-            if as_of:
+            date_clause = " AND date <= ?" if as_of else ""
+            params = (acct_id, as_of) if as_of else (acct_id,)
+            cur.execute(
+                "SELECT MAX(date) FROM transactions "
+                "WHERE account_id = ? AND balance IS NOT NULL" + date_clause,
+                params,
+            )
+            latest_date = cur.fetchone()[0]
+
+            balance = None
+            if latest_date is not None:
                 cur.execute(
-                    "SELECT date, balance FROM transactions "
-                    "WHERE account_id = ? AND balance IS NOT NULL AND date <= ? "
-                    "ORDER BY date DESC, id DESC LIMIT 1",
-                    (acct_id, as_of),
+                    "SELECT id, source_file, balance FROM transactions "
+                    "WHERE account_id = ? AND balance IS NOT NULL AND date = ? "
+                    "ORDER BY id",
+                    (acct_id, latest_date),
                 )
-            else:
-                cur.execute(
-                    "SELECT date, balance FROM transactions "
-                    "WHERE account_id = ? AND balance IS NOT NULL "
-                    "ORDER BY date DESC, id DESC LIMIT 1",
-                    (acct_id,),
-                )
-            row = cur.fetchone()
+                day_rows = cur.fetchall()
+                # The newest export covering this date owns its closing
+                # balance: it holds the highest id. Inside that export the
+                # postings are newest-first, so the lowest id of the file is
+                # the newest posting.
+                newest_source = day_rows[-1][1]
+                same_source = [
+                    row for row in day_rows
+                    if row[1] == newest_source or (row[1] is None and newest_source is None)
+                ]
+                balance = same_source[0][2] if same_source else None
+
             balances.append(
                 {
                     "account_id": acct_id,
                     "name": name,
                     "type": acct_type,
                     "currency": currency,
-                    "date": row[0] if row else None,
-                    "balance": row[1] if row else None,
+                    "date": latest_date,
+                    "balance": balance,
                 }
             )
         return balances
